@@ -1,3 +1,19 @@
+# Copyright 2022 BAAI
+# Copyright 2021 AlQuraishi Laboratory
+# Copyright 2021 DeepMind Technologies Limited
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from collections import defaultdict
 import random
 
@@ -254,7 +270,6 @@ def multichain_permutation_alignment(batch, out, feat_schema):
             pred_chains.append(pred_pad_chain)
             
         aligned_gt_feats = defaultdict(list)
-        # print('align: ', [a["chain_index"] for a in best_align], "rmsd: ", min_rmsd)
         for i, choosed_gt_chain in enumerate(best_align):
             residue_index = pred_chains[i]["residue_index"]
 

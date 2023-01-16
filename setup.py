@@ -74,11 +74,10 @@ extra_cuda_flags += cc_flag
 setup(
     name='opencomplex',
     version='1.0.0',
-    description='A PyTorch reimplementation of DeepMind\'s AlphaFold 2',
-    author='Gustaf Ahdritz & DeepMind',
-    author_email='gahdritz@gmail.com',
+    description='A platform for protein and RNA complex structure predicition.',
+    author='BAAI',
+    author_email='jingchengyu.94@gmail.com',
     license='Apache License, Version 2.0',
-    url='https://github.com/aqlaboratory/openfold',
     packages=find_packages(exclude=["tests", "scripts"]),
     include_package_data=True,
     package_data={

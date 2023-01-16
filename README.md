@@ -1,3 +1,4 @@
+![header](img/logo.png)
 # OpenComplex
 OpenComplex is an open-source platform for developing protein and RNA complex models.  
 Based on DeepMind's [Alphafold 2](https://github.com/deepmind/alphafold) and AQ Laboratory's [OpenFold](https://github.com/aqlaboratory/openfold), OpenComplex support almost all features from Alphafold 2 and OpenFold, and introduces the following new features:
@@ -5,7 +6,7 @@ Based on DeepMind's [Alphafold 2](https://github.com/deepmind/alphafold) and AQ 
 * RNA and protein-RNA complex models with high precision.
 * Kernel fusion and optimization on >=Ampere GPUs, brings 16% 
 
-![Figure 1. OpenComplex inference result of RNA and protein-RNA complex.]()
+![Figure 1. OpenComplex inference result of RNA and protein-RNA complex.](img/cases.png)
 
 We will release training results and pretrained parameters soon.
 
@@ -71,7 +72,7 @@ To run inference with OpenComplex parameters, run e.g.:
 ```bash
 python3 run_pretrained_opencomplex.py \
     --features_dir example_data/features_dir \        # the same dataset directory as in the previous step.
-    --target_list_file example_data/filter.txt \ # filter of target lists
+    --target_list_file example_data/filter.txt \      # filter of target lists
     --output_dir /path/to/output/directory \          # output directory
     --use_gpu \                                       # use gpu inference
     --num_workers 8 \                                 # number of parallel processes
@@ -129,6 +130,20 @@ Certain tests require that AlphaFold (v2.0.1) be installed in the same Python
 environment. These run components of AlphaFold and OpenFold side by side and
 ensure that output activations are adequately similar. For most modules, we
 target a maximum pointwise difference of `1e-4`.
+
+## Citation
+
+If you find our open-sourced code & models helpful to your research, please also consider star🌟 and cite📑 this repo. Thank you for your support!
+```
+@misc{OpenComplex_code,
+  author={Zhaoming, Chen and Jingcheng, Yu and Zhaoqun, Li and Mingliang, Zeng and He, Huang and Qiwei, Ye},
+  title={Code of OpenComplex},
+  year={2022},
+  howpublished = {\url{}}
+}
+```
+Any work that cites OpenComplex should also cite OpenFold and AlphaFold.
+
 
 ## License and Disclaimer
 

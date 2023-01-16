@@ -13,7 +13,6 @@ wget -P /tmp \
 
 # Grab conda-only packages
 export PATH=lib/conda/bin:$PATH
-lib/conda/bin/python3 -m pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
 lib/conda/bin/python3 -m pip install nvidia-pyindex
 conda install -y mamba -n base -c conda-forge
 conda create -y -n ${ENV_NAME} python=3.9

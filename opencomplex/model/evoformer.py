@@ -29,7 +29,6 @@ from opencomplex.model.msa import (
 from opencomplex.model.outer_product_mean import OuterProductMean
 from opencomplex.model.pair_transition import PairTransition
 from opencomplex.model.triangular_attention import (
-    TriangleAttention,
     TriangleAttentionStartingNode,
     TriangleAttentionEndingNode,
 )
@@ -156,13 +155,13 @@ class EvoformerBlockCore(nn.Module):
             c_hidden_mul,
         )
 
-        self.tri_att_start = TriangleAttention(
+        self.tri_att_start = TriangleAttentionStartingNode(
             c_z,
             c_hidden_pair_att,
             no_heads_pair,
             inf=inf,
         )
-        self.tri_att_end = TriangleAttention(
+        self.tri_att_end = TriangleAttentionEndingNode(
             c_z,
             c_hidden_pair_att,
             no_heads_pair,
@@ -1027,13 +1026,13 @@ class PairTransformerBlock(nn.Module):
             c_hidden_mul,
         )
 
-        self.tri_att_start = TriangleAttention(
+        self.tri_att_start = TriangleAttentionStartingNode(
             c_z,
             c_hidden_pair_att,
             no_heads_pair,
             inf=inf,
         )
-        self.tri_att_end = TriangleAttention(
+        self.tri_att_end = TriangleAttentionEndingNode(
             c_z,
             c_hidden_pair_att,
             no_heads_pair,

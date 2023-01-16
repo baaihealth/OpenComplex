@@ -579,6 +579,7 @@ class OpenComplexDataModule(pl.LightningDataModule):
         predict_alignment_dir: Optional[str] = None,
         kalign_binary_path: str = '/usr/bin/kalign',
         train_filter_path: Optional[str] = None,
+        val_filter_path: Optional[str] = None,
         distillation_filter_path: Optional[str] = None,
         obsolete_pdbs_file_path: Optional[str] = None,
         template_release_dates_cache_path: Optional[str] = None,
@@ -616,6 +617,7 @@ class OpenComplexDataModule(pl.LightningDataModule):
         self.predict_alignment_dir = predict_alignment_dir
         self.kalign_binary_path = kalign_binary_path
         self.train_filter_path = train_filter_path
+        self.val_filter_path = val_filter_path
         self.distillation_filter_path = distillation_filter_path
         self.template_release_dates_cache_path = (
             template_release_dates_cache_path
@@ -743,7 +745,7 @@ class OpenComplexDataModule(pl.LightningDataModule):
                     feature_dir=self.val_feature_dir,
                     rna_label_dir=self.val_label_dir,
                     alignment_dir=self.val_alignment_dir,
-                    filter_path=None,
+                    filter_path=self.val_filter_path,
                     max_template_hits=self.config.eval.max_template_hits,
                     mode="eval",
                 )

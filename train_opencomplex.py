@@ -442,6 +442,12 @@ if __name__ == "__main__":
                 set'''
     )
     parser.add_argument(
+        "--val_filter_path", type=str, default=None,
+        help='''Optional path to a text file containing names of validation
+                examples to include, one per line. Used to filter the training
+                set'''
+    )
+    parser.add_argument(
         "--distillation_filter_path", type=str, default=None,
         help="""See --train_filter_path"""
     )

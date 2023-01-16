@@ -618,9 +618,10 @@ class DataPipeline:
         return msa_features
 
     def _parse_rna_labels_data(self, labels_dir):
+        # TODO unify rna labels to features file
         ret_labels = {}
         # load labels in dict format
-        labels = torch.load(labels_dir)
+        labels = torch.load(f"{labels_dir}/labels.pth")
         # containing 'dis_n', 'dis_c4', 'dis_p', 'omg', 'theta'
         # ret_labels["geometry_head"] = labels["geometry_head"].copy()
         ret_labels["dis_n"] = labels["geometry_head"]['dis_n']
@@ -680,13 +681,14 @@ class DataPipeline:
         feature_dir: str,
     ):
         """Read features from generated pkl file"""
+        # TODO unify data format
         if os.path.exists(os.path.join(feature_dir, "features.pkl")):
             with open(os.path.join(feature_dir, "features.pkl"), "rb") as f:
                 features = pickle.load(f)
-        elif os.path.exists(os.path.join(feature_dir, "complex_feature.pth")):
-            features = torch.load(os.path.join(feature_dir, "complex_feature.pth"))
+        elif os.path.exists(os.path.join(feature_dir, "features.pth")):
+            features = torch.load(os.path.join(feature_dir, "features.pth"))
         else:
-            features = torch.load(feature_dir)
+            raise ValueError(f"Feature file not found {feature_dir}")
         
         features = rename_feats(features)
         
@@ -725,10 +727,10 @@ class DataPipeline:
         if os.path.exists(os.path.join(feature_dir, "features.pkl")):
             with open(os.path.join(feature_dir, "features.pkl"), "rb") as f:
                 features = pickle.load(f)
-        elif os.path.exists(os.path.join(feature_dir, "complex_feature.pth")):
-            features = torch.load(os.path.join(feature_dir, "complex_feature.pth"))
+        elif os.path.exists(os.path.join(feature_dir, "features.pth")):
+            features = torch.load(os.path.join(feature_dir, "features.pth"))
         else:
-            features = torch.load(feature_dir)
+            raise ValueError(f"Feature file not found {feature_dir}")
 
         features = rename_feats(features)
 

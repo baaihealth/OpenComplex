@@ -92,7 +92,7 @@ config = mlc.ConfigDict({
             "uniform_recycling": False,
         },
         "eval": {
-            "fixed_size": False,
+            "fixed_size": True,
             "subsample_templates": False,  # We want top templates.
             "masked_msa_replace_fraction": 0.0,
             "max_msa_clusters": 128,
@@ -105,7 +105,7 @@ config = mlc.ConfigDict({
             "uniform_recycling": False,
         },
         "train": {
-            "fixed_size": False,
+            "fixed_size": True,
             "subsample_templates": False,
             "masked_msa_replace_fraction": 0.0,
             "max_extra_msa": 5120,

@@ -32,12 +32,6 @@ To activate the environment, run:
 source scripts/activate_conda_env.sh
 ```
 
-To deactivate it, run:
-
-```bash
-source scripts/deactivate_conda_env.sh
-```
-
 With the environment active, compile CUDA kernels with
 
 ```bash
@@ -47,7 +41,7 @@ python3 setup.py install
 To install the HH-suite to `/usr/bin`, run
 
 ```bash
-# scripts/install_hh_suite.sh
+scripts/install_hh_suite.sh
 ```
 
 ## Usage
@@ -65,51 +59,9 @@ If you've already computed alignments for the query, you have the option to
 skip the expensive alignment computation here with 
 `--use_precomputed_alignments`.
 
-### Inference
+### Train and Inference
 
-To run inference with OpenComplex parameters, run e.g.:
-
-```bash
-python3 run_pretrained_opencomplex.py \
-    --features_dir example_data/features_dir \        # the same dataset directory as in the previous step.
-    --target_list_file example_data/filter.txt \      # filter of target lists
-    --output_dir /path/to/output/directory \          # output directory
-    --use_gpu \                                       # use gpu inference
-    --num_workers 8 \                                 # number of parallel processes
-    --param_paths /path/to/ckpt \                     # ckpt path
-    --config_presets "RNA"                            # config presets as in config.py
-    --complex_type "RNA"                              # protein, RNA, or mix (protein-RNA complex)
-    --skip_relaxation \                               # skip amber relaxation
-    --overwrite \                                     # overwrite existing result
-```
-
-### Training
-
-After generating the feature files with the steps in data preparation section, call the training script:
-
-```bash
-python3 train_opencomplex.py
-    --config_preset "RNA"                         # config presets defined in config.py
-    --complex_type "RNA"                          # protein, RNA or mix (protein-RNA complex)
-    --train_data_dir example_data/mmcif_dir       # ground truth directory
-    --train_feature_dir example_data/features_dir # features of training sample
-    --train_filter_path example/filter.txt        # filter of training sample
-    --val_data_dir example_data/mmcif_dir         # optional ground truth directory of validation sample
-    --val_feature_dir example_data/features_dir   # optional features of validation sample
-    --val_filter_path example_data/filter.txt     # filter of validation sample
-    --output_dir /path/to/output                  # output directory of checkpoints
-    --precision 32                                # use bf16 will have better training speed but slightly worse accuracy
-    --gpus 8
-    --replace_sampler_ddp=True \
-    --seed 4242022 \                              # in multi-gpu settings, the seed must be specified
-    --train_epoch_len 5000 \
-    --max_epochs 10 \
-    --batch_size 1 \
-    --checkpoint_every_epoch \
-    --resume_from_ckpt ckpt_dir/ \
-    --log_lr
-    --wandb
-```
+See example bash scripts in example_data/scripts
 
 ## Testing
 

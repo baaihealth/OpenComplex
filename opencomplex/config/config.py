@@ -186,74 +186,10 @@ def model_config(
         c.model.template.template_pair_embedder.use_separate_linear = True
         c.model.template.template_angle_embedder.use_alt_torsion_angles = False
         c.model.template.template_angle_embedder.c_in = 34
-    elif name == "fast":
-        c.model.evoformer_stack.no_blocks = 16
-        c.data.train.crop_size = 128
-
-        c.data.train.max_extra_msa = 1024
-        c.data.eval.max_extra_msa = 1024
-        c.data.predict.max_extra_msa = 1024
-
-        c.data.train.max_extra_msa = 1024
-
-        c.data.train.max_msa_clusters = 128
-        c.data.eval.max_msa_clusters = 128
-        c.data.predict.max_msa_clusters = 128
-
-        c.data.common.max_recycling_iters = 3
-    elif name == "multimer_fast":
-        c.model.evoformer_stack.no_blocks = 16
-        c.data.train.crop_size = 128
-
-        c.data.train.max_extra_msa = 1024
-        c.data.eval.max_extra_msa = 1024
-        c.data.predict.max_extra_msa = 1024
-
-        c.data.train.max_extra_msa = 1024
-
-        c.data.train.max_msa_clusters = 128
-        c.data.eval.max_msa_clusters = 128
-        c.data.predict.max_msa_clusters = 128
-
-        c.data.common.max_recycling_iters = 3
-
-        c.data.data_module.data_loaders.num_workers = 16
-    elif name == "rna":
-        c_z.set(32)
-        c_m.set(32)
-        c_s.set(64)
+    elif name == "RNA":
+        pass
     elif name == "mix":
-        c.model.evoformer_stack.no_blocks = 16
-
-        c.data.train.crop_size = 128
-
-        c.data.train.max_msa_clusters = 128
-        c.data.eval.max_msa_clusters = 128
-        c.data.predict.max_msa_clusters = 128
-
-        c.data.common.max_recycling_iters = 3
-    elif name == "mix_finetune":
-        c.model.evoformer_stack.no_blocks = 16
-
-        c.data.train.crop_size = 128
-
-        c.data.train.max_msa_clusters = 128
-        c.data.eval.max_msa_clusters = 128
-        c.data.predict.max_msa_clusters = 128
-
-        c.data.common.max_recycling_iters = 3
-
-        c.loss.supervised_chi.weight = 2.0
-    elif name == "mix_large":
-        c.model.evoformer_stack.no_blocks = 48
-
-        c.data.train.crop_size = 384
-
-        c.data.train.max_msa_clusters = 256
-        c.data.eval.max_msa_clusters = 256
-        c.data.predict.max_msa_clusters = 256
-
-        c.data.common.max_recycling_iters = 3
+        pass
     else:
         raise ValueError("Invalid model name")
 

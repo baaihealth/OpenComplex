@@ -1556,8 +1556,6 @@ def crop_to_size(
         if res_slices is None:
             # fallback to random crop
             res_slices = random_crop_to_size(bio_complex, crop_size, randint)
-    # res_slices = list(range(138, 138+128))
-    # res_slices = list(range(8, 8+128))
 
     if "template_mask" in bio_complex:
         num_templates = bio_complex["template_mask"].shape[-1]
@@ -1735,9 +1733,6 @@ def random_crop_to_size_multiple_chains(
                 start + select_start_offset + select_len,
             ))
         remain_crop -= select_len
-
-    # NOTE(yujingcheng): should we random permute order of chains?
-    # random.shuffle(selections) 
 
     res_slices = []
     for start, end in selections:

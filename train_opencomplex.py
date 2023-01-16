@@ -203,7 +203,8 @@ class OpenComplexWrapper(pl.LightningModule):
 
         lr_scheduler = AlphaFoldLRScheduler(
             optimizer,
-            start_decay_after_n_steps=50000,
+            max_lr=learning_rate,
+            start_decay_after_n_steps=5000,
         )
 
         return {

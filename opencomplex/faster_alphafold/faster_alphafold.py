@@ -1,9 +1,14 @@
 import os
 import torch
+import logging
 from torch import nn, autograd
 
 path='opencomplex/faster_alphafold/libths_faster_alphafold.so'
-#torch.ops.load_library(path)
+try:
+    torch.ops.load_library(path)
+except Exception as e:
+    logging.warn("Failed to load faster alphafold library...")
+    
 
 class LayerNormFunction(autograd.Function):
     @staticmethod

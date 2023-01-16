@@ -280,6 +280,8 @@ def load_models_from_command_line(args, model_device):
     config_presets = args.config_presets
     param_paths = args.param_paths
 
+    mode = "monomer"
+
     num_models = len(config_presets)
     assert num_models == len(param_paths), "Different number of configs and parameter files provided!"
     multiple_model_mode = num_models > 1
@@ -327,7 +329,11 @@ def load_models_from_command_line(args, model_device):
         
         model = model.to(model_device)
         ret.append((config_preset, config, model, feature_processor, output_directory))
-    return ret
+
+        if "multimer" in config_preset:
+            mode = "multimer"
+
+    return ret, mode
 
 
 def list_files_with_extensions(dir, extensions):
@@ -410,10 +416,11 @@ def main(worker_id, args, infer_from_fasta):
     
     if args.use_gpu:
         model_device = f"cuda:{worker_id}"
+        torch.cuda.set_device(model_device)
     else:
         model_device = "cpu"
     logger.info("my model device is %s", model_device)
-    models = load_models_from_command_line(args, model_device)    
+    models, mode = load_models_from_command_line(args, model_device)    
 
     for target in tqdm.tqdm(target_list):
         cur_tracing_interval = 0
@@ -528,10 +535,6 @@ def main(worker_id, args, infer_from_fasta):
                 logger.info(f"Model output written to {output_dict_path}...")
 
     if args.native_dir is not None:
-        if "multimer" in config_preset:
-            mode = "multimer"
-        else:
-            mode = "monomer"
         MetricTool.compute_all_metric(args.native_dir, args.output_dir, mode, target_list)
 
 def update_timings(dict, output_file=os.path.join(os.getcwd(), "timings.json")):

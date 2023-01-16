@@ -31,6 +31,10 @@ while [ ! -f $HOME/.master_ip ]; do
 done
 
 export MASTER_ADDR=$(cat $HOME/.master_ip)
+if [ -z "$MASTER_ADDR"]
+then
+    MASTER_ADDR=127.0.0.1
+fi
 echo "master_ip: $MASTER_ADDR"
 
 ulimit -n 40960
@@ -42,10 +46,11 @@ ulimit -n 40960
 # val_mmcif_dir=$workdir/eval/mmcif
 # val_features_dir=$workdir/eval/features
 # train_chain_data_cache_path="--train_chain_data_cache_path $workdir/train/chain_data_cache.json"
-
+ 
 # config_preset=fast
-
+ 
 # complex_type=protein
+# wandb_project=fast_benchmark
 # ======================================================================
 
 # =================== multimer dataset example ==========================
@@ -58,6 +63,7 @@ ulimit -n 40960
 # config_preset=multimer_fast
 
 # complex_type=protein
+# wandb_project=multimer
 # ======================================================================
 
 # =================== RNA dataset example ==========================
@@ -68,10 +74,11 @@ val_mmcif_dir=$workdir/mmcif
 val_features_dir=$workdir/feature
 train_label_dir="--train_label_dir $workdir/label"
 val_label_dir="--val_label_dir $workdir/label"
-
+ 
 config_preset=rna
 
 complex_type=RNA
+wandb_project=rna
 # ======================================================================
 
 
@@ -88,8 +95,11 @@ gpu_num=`nvidia-smi --list-gpus | wc -l`
 max_epochs=15
 
 
+wandb_project="opencomplex"
+experiment_name="my_experiment"
+
 # uncomment for debug mode, which sets data loader worker num to 1, and disable wandb
-debug="--debug"
+# debug="--debug"
 
 
 cmd="
@@ -113,6 +123,8 @@ python train_opencomplex.py
     --batch_size ${batch_size}
     --complex_type ${complex_type}
     --wandb
+    --wandb_project $wandb_project
+    --experiment_name $experiment_name
     $train_label_dir
     $val_label_dir
     ${train_chain_data_cache_path}

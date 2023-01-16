@@ -429,13 +429,6 @@ class Attention(nn.Module):
             k = qkv[..., unit:unit*2]
             v = qkv[..., unit*2:]
         else:
-            if not hasattr(self, "linear_q"):
-                print("not use attention v2")
-                print("self.enable_attention_v2", self.enable_attention_v2)
-                print("(id(q_x) == id(kv_x) or torch.equal(q_x, kv_x))", (id(q_x) == id(kv_x) or torch.equal(q_x, kv_x)))
-                print(q_x)
-                print("==========")
-                print(kv_x)
             q = self.linear_q(q_x)
             k = self.linear_k(kv_x)
             v = self.linear_v(kv_x)

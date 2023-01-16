@@ -37,11 +37,20 @@ from Bio.PDB import PDBIO
 class MetricTool:
     @classmethod
     def compute_metric(cls, native, prediction, fast=False):
+        UNKNOWN = 20
+
         metrics = {}
 
         gt_coords = native["all_atom_positions"]
+        gt_mask = native["all_atom_mask"]
+
+        # remove unknown residues
+        gt_butype = torch.argmax(native["butype"], dim=-1)
+        gt_coords = gt_coords[torch.where(gt_butype != UNKNOWN)]
+        gt_mask = gt_mask[torch.where(gt_butype != UNKNOWN)]
+
         pred_coords = prediction["all_atom_positions"]
-        all_atom_mask = native["all_atom_mask"] * prediction["all_atom_mask"]
+        all_atom_mask = gt_mask * prediction["all_atom_mask"]
 
         ca_pos = residue_constants.atom_order["CA"]
 
@@ -127,7 +136,7 @@ class MetricTool:
     ):
         prediction_list = MetricTool.get_prediction_list(prediction_dir, target_list)
 
-        keys_to_use = ["all_atom_positions", "all_atom_mask"]
+        keys_to_use = ["all_atom_positions", "all_atom_mask", "butype"]
 
         current_chain = current_gt = None
         current_sequences = None

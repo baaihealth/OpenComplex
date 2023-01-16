@@ -95,7 +95,7 @@ class OpenComplex(nn.Module):
             self.pair_transformer_stack = PairTransformerStack(
                 **self.config["pair_transformer_stack"],
             )
-        
+
         if(self.template_config.enabled):
             self.template_angle_embedder = TemplateAngleEmbedder(
                 **self.template_config["template_angle_embedder"],
@@ -109,7 +109,7 @@ class OpenComplex(nn.Module):
             self.template_pointwise_att = TemplatePointwiseAttention(
                 **self.template_config["template_pointwise_attention"],
             )
-       
+
         if(self.extra_msa_config.enabled):
             self.extra_msa_embedder = ExtraMSAEmbedder(
                 **self.extra_msa_config["extra_msa_embedder"],
@@ -117,7 +117,7 @@ class OpenComplex(nn.Module):
             self.extra_msa_stack = ExtraMSAStack(
                 **self.extra_msa_config["extra_msa_stack"],
             )
-        
+
         self.evoformer = EvoformerStack(
             **self.config["evoformer_stack"],
         )
@@ -130,7 +130,7 @@ class OpenComplex(nn.Module):
         self.aux_heads = AuxiliaryHeads(
             self.config["heads"],
         )
-            
+
 
     def iteration(self, feats, prevs, _recycle=True):
         # Primary output dictionary
@@ -148,7 +148,7 @@ class OpenComplex(nn.Module):
         n = feats["target_feat"].shape[-2]
         n_seq = feats["msa_feat"].shape[-3]
         device = feats["target_feat"].device
-        
+
         # Controls whether the model uses in-place operations throughout
         # The dual condition accounts for activation checkpoints
         inplace_safe = not (self.training or torch.is_grad_enabled())
@@ -157,7 +157,7 @@ class OpenComplex(nn.Module):
         seq_mask = feats["seq_mask"]
         pair_mask = seq_mask[..., None] * seq_mask[..., None, :]
         msa_mask = feats["msa_mask"]
-        
+
         asym_id = feats.get("asym_id", None)
         sym_id = feats.get("sym_id", None)
         entity_id = feats.get("entity_id", None)
@@ -211,11 +211,11 @@ class OpenComplex(nn.Module):
 
             del ss_embed
 
-        # Unpack the recycling embeddings. Removing them from the list allows 
+        # Unpack the recycling embeddings. Removing them from the list allows
         # them to be freed further down in this function, saving memory
         m_1_prev, z_prev, x_prev = reversed([prevs.pop() for _ in range(3)])
 
-        # Initialize the recycling embeddings, if needs be 
+        # Initialize the recycling embeddings, if needs be
         if None in [m_1_prev, z_prev, x_prev]:
             # [*, N, C_m]
             m_1_prev = m.new_zeros(
@@ -231,7 +231,7 @@ class OpenComplex(nn.Module):
 
             # [*, N, 3]
             x_prev = z.new_zeros(
-                (*batch_dims, n, feats["all_atom_mask"].shape[-1], 3),
+                (*batch_dims, n, feats["all_atom_exists"].shape[-1], 3),
                 requires_grad=False,
             )
 
@@ -269,7 +269,7 @@ class OpenComplex(nn.Module):
         del m_1_prev, z_prev, x_prev, m_1_prev_emb, z_prev_emb
 
         # Embed the templates + merge with MSA/pair embeddings
-        if self.config.template.enabled: 
+        if self.config.template.enabled:
             if asym_id is not None:
                 multichain_mask = asym_id[..., None] == asym_id[..., None, :]
             else:
@@ -302,14 +302,14 @@ class OpenComplex(nn.Module):
             if "template_angle_embedding" in template_embeds:
                 # [*, S = S_c + S_t, N, C_m]
                 m = torch.cat(
-                    [m, template_embeds["template_angle_embedding"]], 
+                    [m, template_embeds["template_angle_embedding"]],
                     dim=-3
                 )
 
                 # [*, S, N]
                 torsion_angles_mask = feats["template_torsion_angles_mask"]
                 msa_mask = torch.cat(
-                    [feats["msa_mask"], torsion_angles_mask[..., 2]], 
+                    [feats["msa_mask"], torsion_angles_mask[..., 2]],
                     dim=-2
                 )
 
@@ -323,7 +323,7 @@ class OpenComplex(nn.Module):
                 # offload its inputs, we remove all references to them here
                 input_tensors = [a, z]
                 del a, z
-    
+
                 # [*, N, N, C_z]
                 z = self.extra_msa_stack._forward_offload(
                     input_tensors,
@@ -333,7 +333,7 @@ class OpenComplex(nn.Module):
                     pair_mask=pair_mask.to(dtype=m.dtype),
                     _mask_trans=self.config._mask_trans,
                 )
-    
+
                 del input_tensors
             else:
                 # [*, N, N, C_z]
@@ -350,7 +350,7 @@ class OpenComplex(nn.Module):
         # Run MSA + pair embeddings through the trunk of the network
         # m: [*, S, N, C_m]
         # z: [*, N, N, C_z]
-        # s: [*, N, C_s]          
+        # s: [*, N, C_s]
         if(self.globals.offload_inference):
             input_tensors = [m, z]
             del m, z
@@ -362,7 +362,7 @@ class OpenComplex(nn.Module):
                 use_lma=self.globals.use_lma,
                 _mask_trans=self.config._mask_trans,
             )
-    
+
             del input_tensors
         else:
             m, z, s = self.evoformer(
@@ -488,7 +488,7 @@ class OpenComplex(nn.Module):
 
         # Main recycling loop
         num_iters = batch["butype"].shape[-1]
-        for cycle_no in range(num_iters): 
+        for cycle_no in range(num_iters):
             # Select the features for the current recycling cycle
             fetch_cur_batch = lambda t: t[..., cycle_no]
             feats = tensor_tree_map(fetch_cur_batch, batch)
@@ -514,6 +514,9 @@ class OpenComplex(nn.Module):
                     del m_1_prev, z_prev, x_prev
 
         # Run auxiliary heads
-        outputs.update(self.aux_heads(outputs))
+        asym_id = batch.get("asym_id", None)
+        if asym_id is not None:
+            asym_id = asym_id[..., 0]
+        outputs.update(self.aux_heads(outputs, asym_id))
 
         return outputs

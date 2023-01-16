@@ -40,7 +40,7 @@ def enforce_config_constraints(config):
 
     mutually_exclusive_bools = [
         (
-            "model.template.average_templates", 
+            "model.template.average_templates",
             "model.template.offload_templates"
         ),
         (
@@ -61,21 +61,21 @@ def enforce_config_constraints(config):
 
 
 def model_config(
-    name, 
-    train=False, 
-    low_prec=False, 
+    name,
+    train=False,
+    low_prec=False,
     long_sequence_inference=False
 ):
     if "rna" in name.lower():
         c = copy.deepcopy(default_rna_config.config)
     elif "multimer" in name.lower():
-        c = copy.deepcopy(default_protein_config.multimer_config)
+        c = copy.deepcopy(default_protein_config.config_multimer)
     elif "mix" in name.lower():
         c = copy.deepcopy(default_complex_config.config)
     else:
         c = copy.deepcopy(default_protein_config.config)
 
-    
+
     # TRAINING PRESETS
     if name == "initial_training":
         # AF2 Suppl. Table 4, "initial training" setting
@@ -143,7 +143,7 @@ def model_config(
         c.model.template.enabled = False
     elif name == "model_1_ptm":
         c.data.train.max_extra_msa = 5120
-        c.data.predict.max_extra_msa = 5120 
+        c.data.predict.max_extra_msa = 5120
         c.data.common.reduce_max_clusters_by_max_templates = True
         c.data.common.use_templates = True
         c.data.common.use_template_torsion_angles = True
@@ -249,7 +249,7 @@ def model_config(
 
         c.data.train.crop_size = 384
 
-        c.data.train.max_msa_clusters = 256 
+        c.data.train.max_msa_clusters = 256
         c.data.eval.max_msa_clusters = 256
         c.data.predict.max_msa_clusters = 256
 
@@ -266,7 +266,7 @@ def model_config(
         c.model.template.template_pair_stack.tune_chunk_size = False
         c.model.extra_msa.extra_msa_stack.tune_chunk_size = False
         c.model.evoformer_stack.tune_chunk_size = False
-    
+
     if train:
         c.globals.blocks_per_ckpt = 1
         c.globals.chunk_size = None

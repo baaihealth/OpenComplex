@@ -101,7 +101,6 @@ def compute_tm(
     no_bins: int = 64,
     eps: float = 1e-8,
     asym_id: Optional[torch.Tensor] = None,
-    interface: bool = False,
     **kwargs,
 ) -> torch.Tensor:
     if residue_weights is None:
@@ -124,7 +123,7 @@ def compute_tm(
     predicted_tm_term = torch.sum(probs * tm_per_bin, dim=-1)
 
     pair_mask = torch.ones_like(predicted_tm_term)
-    if interface:
+    if asym_id is not None:
         pair_mask *= asym_id[..., None] != asym_id[..., None, :]
 
     predicted_tm_term *= pair_mask

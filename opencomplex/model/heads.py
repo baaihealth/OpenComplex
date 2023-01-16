@@ -60,7 +60,7 @@ class AuxiliaryHeads(nn.Module):
 
         self.config = config
 
-    def forward(self, outputs, asym_id=None, interface=False):
+    def forward(self, outputs, asym_id=None):
         aux_out = {}
         lddt_logits = self.plddt(outputs["sm"]["single"])
         aux_out["lddt_logits"] = lddt_logits
@@ -84,10 +84,10 @@ class AuxiliaryHeads(nn.Module):
         if self.config.tm.enabled:
             tm_logits = self.tm(outputs["pair"])
             aux_out["tm_logits"] = tm_logits
-            ptm = compute_tm(tm_logits, asym_id=None, interface=False, **self.config.tm)
-            if interface:
+            ptm = compute_tm(tm_logits, asym_id=None, **self.config.tm)
+            if asym_id is not None:
                 iptm = compute_tm(
-                    tm_logits, asym_id=asym_id, interface=interface, **self.config.tm
+                    tm_logits, asym_id=asym_id, **self.config.tm
                 )
                 ptm = ptm * 0.2 + iptm * 0.8
             aux_out["predicted_tm_score"] = ptm

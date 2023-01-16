@@ -14,10 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Sequence
-
 import math
 import importlib
+
+from functools import reduce
+from operator import mul
+from typing import Optional, Sequence
 
 import torch
 from torch import nn
@@ -131,7 +133,7 @@ class InvariantPointAttention(nn.Module):
             z = _z_reference_list
         else:
             z = [z]
-       
+
         assert r is not None or xyz is not None, "must provide rigid or xyz"
 
         xyz_m = xyz.mean(dim=-2, keepdim=True) if xyz is not None else None
@@ -187,7 +189,7 @@ class InvariantPointAttention(nn.Module):
         ##########################
         # [*, N_res, N_res, H]
         b = self.linear_b(z[0])
-        
+
         if(_offload_inference):
             z[0] = z[0].cpu()
 
@@ -227,7 +229,7 @@ class InvariantPointAttention(nn.Module):
 
         # [*, H, N_res, N_res]
         pt_att = permute_final_dims(pt_att, (2, 0, 1))
-        
+
         if(inplace_safe):
             a += pt_att
             del pt_att
@@ -239,7 +241,7 @@ class InvariantPointAttention(nn.Module):
                 a.shape[-1],
             )
         else:
-            a = a + pt_att 
+            a = a + pt_att
             a = a + square_mask.unsqueeze(-3)
             a = self.softmax(a)
 
@@ -254,11 +256,11 @@ class InvariantPointAttention(nn.Module):
         # [*, N_res, H * C_hidden]
         o = flatten_final_dims(o, 2)
 
-        # [*, H, 3, N_res, P_v] 
+        # [*, H, 3, N_res, P_v]
         if(inplace_safe):
             v_pts = permute_final_dims(v_pts, (1, 3, 0, 2))
             o_pt = [
-                torch.matmul(a, v.to(a.dtype)) 
+                torch.matmul(a, v.to(a.dtype))
                 for v in torch.unbind(v_pts, dim=-3)
             ]
             o_pt = torch.stack(o_pt, dim=-3)
@@ -298,5 +300,5 @@ class InvariantPointAttention(nn.Module):
                 (o, *torch.unbind(o_pt, dim=-1), o_pt_norm, o_pair), dim=-1
             ).to(dtype=z[0].dtype)
         )
-        
+
         return s

@@ -12,20 +12,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import copy
 from opencomplex.utils.rigid_utils import Rigid, Rotation
 import torch
-import torch.nn as nn
 
-from opencomplex.utils.complex_utils import complex_gather    
 from opencomplex.utils.feats_rna import frames_and_literature_positions_to_atom23_pos
 from opencomplex.utils.feats_rna import torsion_angles_to_frames as torsion_angles_to_frames_rna
 
-from opencomplex.utils.feats import frames_and_literature_positions_to_atom14_pos
 from opencomplex.utils.feats import torsion_angles_to_frames as torsion_angles_to_frames_protein
-
-
-from opencomplex.model.primitives import Linear, LayerNorm
 
 from opencomplex.np.nucleotide_constants import (
     nttype_rigid_group_default_frame,
@@ -39,131 +32,16 @@ from opencomplex.np.residue_constants import (
     aatype_atom14_mask,
     aatype_atom14_rigid_group_positions,
 )
-from opencomplex.model.structure_module import (
-    AngleResnet,
-    StructureModuleTransition,
-    InvariantPointAttention,
-)
+from opencomplex.model.sm.structure_module import StructureModule, BackboneUpdate
 from opencomplex.utils.tensor_utils import (
     dict_multimap,
     padcat
 )
 
-class StructureModuleXYZ(nn.Module):
-    def __init__(
-        self,
-        c_s,
-        c_z,
-        c_ipa,
-        c_resnet,
-        no_heads_ipa,
-        no_qk_points,
-        no_v_points,
-        dropout_rate,
-        no_blocks,
-        no_transition_layers,
-        no_resnet_blocks,
-        no_angles,
-        trans_scale_factor,
-        epsilon,
-        inf,
-        **kwargs,
-    ):
-        """
-        Args:
-            c_s:
-                Single representation channel dimension
-            c_z:
-                Pair representation channel dimension
-            c_ipa:
-                IPA hidden channel dimension
-            c_resnet:
-                Angle resnet (Alg. 23 lines 11-14) hidden channel dimension
-            no_heads_ipa:
-                Number of IPA heads
-            no_qk_points:
-                Number of query/key points to generate during IPA
-            no_v_points:
-                Number of value points to generate during IPA
-            dropout_rate:
-                Dropout rate used throughout the layer
-            no_blocks:
-                Number of structure module blocks
-            no_transition_layers:
-                Number of layers in the single representation transition
-                (Alg. 23 lines 8-9)
-            no_resnet_blocks:
-                Number of blocks in the angle resnet
-            no_angles:
-                Number of angles to generate in the angle resnet
-            trans_scale_factor:
-                Scale of single representation transition hidden dimension
-            epsilon:
-                Small number used in angle resnet normalization
-            inf:
-                Large number used for attention masking
-        """
-        super(StructureModuleXYZ, self).__init__()
-
-        self.c_s = c_s
-        self.c_z = c_z
-        self.c_ipa = c_ipa
-        self.c_resnet = c_resnet
-        self.no_heads_ipa = no_heads_ipa
-        self.no_qk_points = no_qk_points
-        self.no_v_points = no_v_points
-        self.dropout_rate = dropout_rate
-        self.no_blocks = no_blocks
-        self.no_transition_layers = no_transition_layers
-        self.no_resnet_blocks = no_resnet_blocks
-        self.no_angles = no_angles
-        self.trans_scale_factor = trans_scale_factor
-        self.epsilon = epsilon
-        self.inf = inf
-
-        # To be lazily initialized later
-        self.default_frames = None
-        self.group_idx = None
-        self.atom_mask = None
-        self.lit_positions = None
-
-        self.layer_norm_s = LayerNorm(self.c_s)
-        self.layer_norm_z = LayerNorm(self.c_z)
-
-        self.linear_in = Linear(self.c_s, self.c_s)
-
-
-        self.ipa = InvariantPointAttention(
-            self.c_s,
-            self.c_z,
-            self.c_ipa,
-            self.no_heads_ipa,
-            self.no_qk_points,
-            self.no_v_points,
-            inf=self.inf,
-            eps=self.epsilon,
-        )
-
-        self.ipa_dropout = nn.Dropout(self.dropout_rate)
-        self.layer_norm_ipa = LayerNorm(self.c_s)
-
-        self.transition = StructureModuleTransition(
-            self.c_s,
-            self.no_transition_layers,
-            self.dropout_rate,
-        )
-
-        # refine module
-        self.refine_net = Linear(self.c_s, 8*3, init="final")
-
-        # sidechain
-        self.angle_resnet = AngleResnet(self.c_s,
-            self.c_resnet,
-            self.no_resnet_blocks,
-            # NOTE: protein和rna的angle应该不同，用同一个angle resnet出来不合理?
-            self.no_angles,
-            self.epsilon,
-        )
+class StructureModuleXYZ(StructureModule):
+    def __init__(self, *args, **kwargs):
+        super(StructureModuleXYZ, self).__init__(*args, **kwargs)
+        self.bb_update = BackboneUpdate(self.c_s, 8*3)
 
     def forward(
         self,
@@ -244,7 +122,7 @@ class StructureModuleXYZ(nn.Module):
             s = self.transition(s)
 
             # backbone refine
-            xyz_update = self.refine_net(s)
+            xyz_update = self.bb_update(s)
             xyz_update = xyz_update.view(xyz.shape)
             xyz = xyz + xyz_update
 

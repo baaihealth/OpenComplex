@@ -12,9 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from functools import partial
-import weakref
-
 import torch
 import torch.nn as nn
 
@@ -35,27 +32,19 @@ from opencomplex.model.evoformer import (
     ExtraMSAStack,
     PairTransformerStack,
 )
-from opencomplex.model.heads import (
-    AuxiliaryHeads,
-    AuxiliaryHeadsRNA,
-)
-from opencomplex.model.structure_module import StructureModule
-from opencomplex.model.structure_module_rna import StructureModuleRNA
-from opencomplex.model.structure_module_xyz import StructureModuleXYZ
+from opencomplex.model.heads import AuxiliaryHeads
+from opencomplex.model.sm.utils import create_structure_module
 from opencomplex.model.template import (
     TemplatePairStack,
     TemplatePointwiseAttention,
     embed_templates,
 )
-import opencomplex.np.nucleotide_constants as nucleotide_constants
-import opencomplex.np.residue_constants as residue_constants
 from opencomplex.utils.feats import (
     build_extra_msa_feat,
     dense_atom_to_all_atom,
 )
 from opencomplex.utils.tensor_utils import (
     add,
-    dict_multimap,
     tensor_tree_map,
 )
 from opencomplex.utils.complex_utils import ComplexType, split_protein_rna_pos
@@ -132,27 +121,14 @@ class OpenComplex(nn.Module):
             **self.config["evoformer_stack"],
         )
 
-        if self.complex_type == ComplexType.PROTEIN:
-            self.structure_module = StructureModule(
-                **self.config["structure_module"],
-            )
-            self.aux_heads = AuxiliaryHeads(
-                self.config["heads"],
-            )
-        elif self.complex_type == ComplexType.RNA:
-            self.structure_module = StructureModuleRNA(
-                **self.config["structure_module"],
-            )
-            self.aux_heads = AuxiliaryHeadsRNA(
-                self.config["heads"],
-            )
-        else:
-            self.structure_module = StructureModuleXYZ(
-                **self.config["structure_module"],
-            )
-            self.aux_heads = AuxiliaryHeadsRNA(
-                self.config["heads"],
-            )
+        self.structure_module = create_structure_module(
+            self.complex_type,
+            **self.config["structure_module"],
+        )
+
+        self.aux_heads = AuxiliaryHeads(
+            self.config["heads"],
+        )
             
 
     def iteration(self, feats, prevs, _recycle=True):
@@ -254,7 +230,7 @@ class OpenComplex(nn.Module):
 
             # [*, N, 3]
             x_prev = z.new_zeros(
-                (*batch_dims, n, residue_constants.atom_type_num, 3),
+                (*batch_dims, n, feats["all_atom_mask"].shape[-1], 3),
                 requires_grad=False,
             )
 

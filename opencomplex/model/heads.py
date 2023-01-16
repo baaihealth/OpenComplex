@@ -45,6 +45,13 @@ class AuxiliaryHeads(nn.Module):
             **config["experimentally_resolved"],
         )
 
+        self.geometry = self.torsion = None
+        if "geometry_head" in config:
+            self.geometry = Geometry_Head(**config["geometry_head"])
+        
+        if "torsion_head" in config:
+            self.torsion = Torsion_Head(**config["torsion_head"])
+
         if config.tm.enabled:
             self.tm = TMScoreHead(
                 **config.tm,
@@ -89,6 +96,12 @@ class AuxiliaryHeads(nn.Module):
                     **self.config.tm,
                 )
             )
+
+        if self.geometry:
+            aux_out["geometry_head"] = self.geometry(outputs["pair"])
+
+        if self.torsion:
+            aux_out["torsion_head"] = self.torsion(outputs["single"])
 
         return aux_out
 
@@ -254,37 +267,6 @@ class ExperimentallyResolvedHead(nn.Module):
         # [*, N, C_out]
         logits = self.linear(s)
         return logits
-
-
-class AuxiliaryHeadsRNA(nn.Module):
-    def __init__(self, config):
-        super(AuxiliaryHeadsRNA, self).__init__()
-
-        self.geometry = Geometry_Head(**config["geometry_head"])
-        self.torsion = Torsion_Head(**config["torsion_head"])
-        self.mask_msa = MaskedMSAHead(**config["masked_msa"])
-        self.plddt = PerResidueLDDTCaPredictor(**config["lddt"])
-        self.distogram = DistogramHead(**config["distogram"])
-        self.experimentally_resolved = ExperimentallyResolvedHead(
-            **config["experimentally_resolved"],
-        )
-        self.config = config
-
-    def forward(self, outputs):
-        aux_out = {}
-
-        lddt_logits = self.plddt(outputs["single"])
-        outputs["lddt_logits"] = lddt_logits
-        outputs["plddt"] = compute_plddt(lddt_logits)
-        aux_out["geometry_head"] = self.geometry(outputs["pair"])
-        aux_out["torsion_head"] = self.torsion(outputs["single"])
-        aux_out["masked_msa_logits"] = self.mask_msa(outputs["msa"])
-        aux_out["distogram_logits"] = self.distogram(outputs["pair"])
-        aux_out["experimentally_resolved_logits"] = self.experimentally_resolved(
-            outputs["single"]
-        )
-
-        return aux_out
 
 
 class Angle_Block(nn.Module):

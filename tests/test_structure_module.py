@@ -24,7 +24,7 @@ from opencomplex.np.residue_constants import (
     aatype_atom14_rigid_group_positions,
     aatype_atom37_mask,
 )
-from opencomplex.model.structure_module import (
+from opencomplex.model.sm.structure_module import (
     StructureModule,
     StructureModuleTransition,
     BackboneUpdate,

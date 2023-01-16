@@ -33,7 +33,7 @@ from opencomplex.model.msa import (
 )
 from opencomplex.model.pair_transition import PairTransition
 from opencomplex.model.primitives import Attention, GlobalAttention
-from opencomplex.model.structure_module import (
+from opencomplex.model.sm.structure_module import (
     InvariantPointAttention,
     BackboneUpdate,
 )

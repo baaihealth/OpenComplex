@@ -19,10 +19,6 @@ from typing import Dict
 import torch
 
 from opencomplex.np import residue_constants
-from opencomplex.loss.loss_utils import (
-    lddt,
-    softmax_cross_entropy,
-)
 from opencomplex.utils.tensor_utils import masked_mean
 
 def between_residue_bond_loss(

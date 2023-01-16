@@ -1,3 +1,4 @@
+# Copyright 2022 BAAI
 # Copyright 2021 AlQuraishi Laboratory
 # Copyright 2021 DeepMind Technologies Limited
 # 

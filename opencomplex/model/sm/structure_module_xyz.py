@@ -177,7 +177,6 @@ class StructureModuleXYZ(StructureModule):
             }
 
             outputs.append(preds)
-            # DEBUG
             frames.append(bb_to_global.unsqueeze(-3))
 
         del z, z_reference_list

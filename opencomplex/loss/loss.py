@@ -193,7 +193,7 @@ def lddt_loss(
 ) -> torch.Tensor:
     n = all_atom_mask.shape[-2]
 
-    # NOTE: ca_pos
+    # TODO(yujingcheng): o4 pos for rna chains
     ca_pos = 1
     all_atom_pred_pos = all_atom_pred_pos[..., ca_pos, :]
     all_atom_positions = all_atom_positions[..., ca_pos, :]
@@ -503,17 +503,6 @@ def backbone_loss(
 ) -> torch.Tensor:
     gt_aff = Rigid.from_tensor_4x4(backbone_rigid_tensor)
 
-    # import pdb; pdb.set_trace()
-    # DEBUG
-    # if len(pred_aff.shape) == len(gt_aff.shape):
-    #     pred_aff = Rigid.stack([pred_aff, 
-    #                             Rigid(
-    #                                 rots=Rotation(
-    #                                     rot_mats=torch.zeros_like(pred_aff.get_rots().get_rot_mats())
-    #                                     ),
-    #                                 trans=torch.zeros_like(pred_aff.get_trans())
-    #                             )], dim=-1)
-
     if backbone_rigid_mask.shape[-1] > 1:
         # concat in N dim, from [*, N, 2] to [*, N*2]
         gt_aff = Rigid.cat([gt_aff[..., 0], gt_aff[..., 1]], dim=-1)
@@ -650,8 +639,6 @@ def fape_loss(
         **{**batch, **config.sidechain},
     )
 
-    # DEBUG
-    # print("bb loss", bb_loss, "sc loss", sc_loss)
     loss = config.backbone.weight * bb_loss + config.sidechain.weight * sc_loss
     
     # Average over the batch dimension
@@ -669,12 +656,9 @@ class OpenComplexLoss(nn.Module):
         self.complex_type = complex_type
 
     def forward(self, out, batch, _return_breakdown=False):
-        # print(out.keys())
-        # return torch.sum(out["msa"]), {}
         align_rmsd = None
         if 'asym_id' in batch:
             with torch.no_grad():
-                # TODO (yujingcheng): complex permu align, use pseudo beta instead of CA
                 batch, align_rmsd = multichain_permutation_alignment(batch, out, self.feat_schema)
                 if isinstance(align_rmsd, torch.Tensor):
                     align_rmsd = float(align_rmsd)
@@ -767,14 +751,8 @@ class OpenComplexLoss(nn.Module):
         losses = {}
         for loss_name, loss_fn in loss_fns.items():
             weight = self.config[loss_name].weight
-            # DEBUG
-            # print(loss_name, weight)
             loss = loss_fn()
             if(torch.isnan(loss) or torch.isinf(loss)):
-                #for k,v in batch.items():
-                #    if(torch.any(torch.isnan(v)) or torch.any(torch.isinf(v))):
-                #        logging.warning(f"{k}: is nan")
-                #logging.warning(f"{loss_name}: {loss}")
                 logging.warning(f"{loss_name} loss is NaN. Skipping...")
                 loss = loss.new_tensor(0., requires_grad=True)
             cum_loss = cum_loss + weight * loss

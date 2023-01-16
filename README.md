@@ -136,13 +136,13 @@ target a maximum pointwise difference of `1e-4`.
 If you find our open-sourced code & models helpful to your research, please also consider star🌟 and cite📑 this repo. Thank you for your support!
 ```
 @misc{OpenComplex_code,
-  author={Zhaoming, Chen and Jingcheng, Yu and Zhaoqun, Li and Mingliang, Zeng and He, Huang and Qiwei, Ye},
+  author={Jingcheng, Yu and Zhaoming, Chen and Zhaoqun, Li and Mingliang, Zeng and Wenjun, Lin and He, Huang and Qiwei, Ye},
   title={Code of OpenComplex},
   year={2022},
   howpublished = {\url{}}
 }
 ```
-Any work that cites OpenComplex should also cite OpenFold and AlphaFold.
+It is recommended to also cite OpenFold and AlphaFold.
 
 
 ## License and Disclaimer

@@ -45,7 +45,7 @@ def get_transform(pred, gt, mask, device):
     sup.run()
     rot, tran = sup.get_rotran()
 
-    # Note the rot is right multiplication. So gt @ rot + trans == pred
+    # rot is right multiplication. So gt @ rot + trans == pred
     return torch.tensor(rot, device=device), torch.tensor(tran, device=device), sup.get_rms()
 
 

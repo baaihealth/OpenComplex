@@ -240,8 +240,6 @@ config = mlc.ConfigDict({
             },
             "geometry_head": {
                 "c_z": c_z,
-                # "min_dist": 2.0,
-                # "max_dist": 40.0,
                 "dist_bins": 38+2,
                 "omega_bins": 24+1,
                 "theta_bins": 24+1,
@@ -252,7 +250,6 @@ config = mlc.ConfigDict({
                 "c_out": 7,
             },
             "lddt": {
-                # TODO: check the number of bins
                 "no_bins": 25,
                 "c_in": c_s,
                 "c_hidden": 128,

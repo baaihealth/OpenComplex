@@ -8,7 +8,7 @@ faster_alphafold_config = mlc.ConfigDict({
     'attention': True,
     'outer_product_mean': True,
     'triangle_multiplicative_update': True,
-}) if torch.cuda.get_device_capability()[0] >= 8 else mlc.ConfigDict({
+}) if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else mlc.ConfigDict({
     'layer_norm': False,
     'softmax': False,
     'attention': False,

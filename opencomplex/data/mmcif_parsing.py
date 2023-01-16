@@ -474,7 +474,7 @@ def get_atom_coords(
         mask = np.zeros([constants.atom_type_num], dtype=np.float32)
         res_at_position = mmcif_object.seqres_to_structure[chain_id][residue_index]
         if not res_at_position.is_missing:
-            # TODO: only keep known NTs
+            # only keep known NTs
             if chain_type == ComplexType.RNA and res_at_position.name not in ['A', 'U', 'G', 'C']:
                 continue
             

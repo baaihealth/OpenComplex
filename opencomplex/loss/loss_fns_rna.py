@@ -22,7 +22,6 @@ import torch
 from opencomplex.np import nucleotide_constants
 from opencomplex.utils.tensor_utils import masked_mean
 from opencomplex.loss.loss_utils import (
-    lddt,
     softmax_cross_entropy
 )
 

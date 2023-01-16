@@ -186,7 +186,7 @@ class OpenComplexSingleDataset(torch.utils.data.Dataset):
                 mmcif_string = f.read()
 
             mmcif_object = mmcif_parsing.parse(
-                file_id=file_id, mmcif_string=mmcif_string, complex_type=self.complex_type
+                file_id=file_id, mmcif_string=mmcif_string
             )
 
             # Crash if an error is encountered. Any parsing errors should have

@@ -237,7 +237,7 @@ class MetricTool:
                         current_sequences = ''.join(sequences)
                         with open(os.path.join(native_dir, protein_name + ".cif"), "r", encoding="utf-8") as f:
                             mmcif_string = f.read()
-                        mmcif_object = mmcif_parsing.parse(file_id=protein_name, mmcif_string=mmcif_string, complex_type=complex_type).mmcif_object
+                        mmcif_object = mmcif_parsing.parse(file_id=protein_name, mmcif_string=mmcif_string).mmcif_object
                         chains = copy.deepcopy(mmcif_object.chain_to_seqres)
                         chain_id = []
                         for seq, chain_type in zip(sequences, chain_types):

@@ -19,10 +19,10 @@ import io
 from typing import Any, Mapping, Optional
 import re
 
-from opencomplex.np import residue_constants
 from opencomplex.np import nucleotide_constants
-from Bio.PDB import PDBParser
 import numpy as np
+
+from opencomplex.utils.complex_utils import ComplexType
 
 FeatureDict = Mapping[str, np.ndarray]
 ModelOutput = Mapping[str, Any]  # Is a nested dict.
@@ -38,10 +38,10 @@ class RNA:
     """RNA structure representation."""
 
     # Cartesian coordinates of atoms in angstroms. The atom types correspond to
-    # residue_constants.atom_types, i.e. the first three are N, CA, CB.
+    # nucleotide_constants.atom_types.
     atom_positions: np.ndarray  # [num_res, num_atom_type, 3]
 
-    # Amino-acid type for each residue represented as an integer between 0 and
+    # Nucleotide type for each residue represented as an integer between 0 and
     # 4, where 4 is 'X'.
     nttype: np.ndarray  # [num_res]
 
@@ -50,7 +50,7 @@ class RNA:
     atom_mask: np.ndarray  # [num_res, num_atom_type]
 
     # Residue index as used in PDB. It is not necessarily continuous or 0-indexed.
-    nt_index: np.ndarray  # [num_res]
+    res_index: np.ndarray  # [num_res]
 
     # 0-indexed number corresponding to the chain in the RNA that this residue
     # belongs to.
@@ -67,88 +67,20 @@ class RNA:
                 f'Cannot build an instance with more than {PDB_MAX_CHAINS} chains '
                 'because these cannot be written to PDB format.')
 
+    def get_chain_sequence(self, idx):
+        return nucleotide_constants.restype_to_str_sequence(self.nttype[self.chain_index==idx])
+
+    def get_chain_type(self, _):
+        return ComplexType.RNA
+
 # tmp usage
-def from_input(atom_positions, atom_mask, nttype, nt_index, chain_index, b_factors) -> RNA:
+def from_input(atom_positions, atom_mask, nttype, res_index, chain_index, b_factors) -> RNA:
     
     return RNA(
         atom_positions=np.array(atom_positions),
         atom_mask=np.array(atom_mask),
         nttype=np.array(nttype),
-        nt_index=np.array(nt_index),
-        chain_index=chain_index,
-        b_factors=np.array(b_factors))
-
-def from_pdb_string(pdb_str: str, chain_id: Optional[str] = None) -> RNA:
-    """Takes a PDB string and constructs a Protein object.
-
-    WARNING: All non-standard residue types will be converted into UNK. All
-      non-standard atoms will be ignored.
-
-    Args:
-      pdb_str: The contents of the pdb file
-      chain_id: If None, then the pdb file must contain a single chain (which
-        will be parsed). If chain_id is specified (e.g. A), then only that chain
-        is parsed. Otherwise all chains are parsed.
-
-    Returns:
-      A new `Protein` parsed from the pdb contents.
-    """
-    pdb_fh = io.StringIO(pdb_str)
-    parser = PDBParser(QUIET=True)
-    structure = parser.get_structure('none', pdb_fh)
-    models = list(structure.get_models())
-    if len(models) != 1:
-        raise ValueError(
-            f'Only single model PDBs are supported. Found {len(models)} models.')
-    model = models[0]
-
-    atom_positions = []
-    aatype = []
-    atom_mask = []
-    residue_index = []
-    chain_ids = []
-    b_factors = []
-
-    for chain in model:
-        if chain_id is not None and chain.id != chain_id:
-            continue
-        for res in chain:
-            if res.id[2] != ' ':
-                raise ValueError(
-                    f'PDB contains an insertion code at chain {chain.id} and residue '
-                    f'index {res.id[1]}. These are not supported.')
-            res_shortname = residue_constants.restype_3to1.get(res.resname, 'X')
-            restype_idx = residue_constants.restype_order.get(
-                res_shortname, residue_constants.restype_num)
-            pos = np.zeros((residue_constants.atom_type_num, 3))
-            mask = np.zeros((residue_constants.atom_type_num,))
-            res_b_factors = np.zeros((residue_constants.atom_type_num,))
-            for atom in res:
-                if atom.name not in residue_constants.atom_types:
-                    continue
-                pos[residue_constants.atom_order[atom.name]] = atom.coord
-                mask[residue_constants.atom_order[atom.name]] = 1.
-                res_b_factors[residue_constants.atom_order[atom.name]] = atom.bfactor
-            if np.sum(mask) < 0.5:
-                # If no known atom positions are reported for the residue then skip it.
-                continue
-            aatype.append(restype_idx)
-            atom_positions.append(pos)
-            atom_mask.append(mask)
-            residue_index.append(res.id[1])
-            chain_ids.append(chain.id)
-            b_factors.append(res_b_factors)
-
-    # Chain IDs are usually characters so map these to ints.
-    unique_chain_ids = np.unique(chain_ids)
-    chain_id_mapping = {cid: n for n, cid in enumerate(unique_chain_ids)}
-    chain_index = np.array([chain_id_mapping[cid] for cid in chain_ids])
-
-    return RNA(
-        atom_positions=np.array(atom_positions),
-        atom_mask=np.array(atom_mask),
-        nttype=np.array(aatype),
-        nt_index=np.array(residue_index),
+        res_index=np.array(res_index),
         chain_index=chain_index,
         b_factors=np.array(b_factors))
 
@@ -159,59 +91,6 @@ def _chain_end(atom_index, end_resname, chain_name, residue_index) -> str:
           f'{chain_name:>1}{residue_index:>4}')
 
 
-def from_proteinnet_string(proteinnet_str: str) -> RNA:
-    tag_re = r'(\[[A-Z]+\]\n)'
-    tags = [
-        tag.strip() for tag in re.split(tag_re, proteinnet_str) if len(tag) > 0
-    ]
-    groups = zip(tags[0::2], [l.split('\n') for l in tags[1::2]])
-   
-    atoms = ['N', 'CA', 'C']
-    aatype = None
-    atom_positions = None
-    atom_mask = None
-    for g in groups:
-        if("[PRIMARY]" == g[0]):
-            seq = g[1][0].strip()
-            for i in range(len(seq)):
-                if(seq[i] not in residue_constants.restypes):
-                    seq[i] = 'X'
-            aatype = np.array([
-                residue_constants.restype_order.get(
-                    res_symbol, residue_constants.restype_num
-                ) for res_symbol in seq
-            ])
-        elif("[TERTIARY]" == g[0]):
-            tertiary = []
-            for axis in range(3):
-                tertiary.append(list(map(float, g[1][axis].split())))
-            tertiary_np = np.array(tertiary)
-            atom_positions = np.zeros(
-                (len(tertiary[0])//3, residue_constants.atom_type_num, 3)
-            ).astype(np.float32)
-            for i, atom in enumerate(atoms):
-                atom_positions[:, residue_constants.atom_order[atom], :] = (
-                    np.transpose(tertiary_np[:, i::3])
-                )
-            atom_positions *= PICO_TO_ANGSTROM
-        elif("[MASK]" == g[0]):
-            mask = np.array(list(map({'-': 0, '+': 1}.get, g[1][0].strip())))
-            atom_mask = np.zeros(
-                (len(mask), residue_constants.atom_type_num,)
-            ).astype(np.float32)
-            for i, atom in enumerate(atoms):
-                atom_mask[:, residue_constants.atom_order[atom]] = 1
-            atom_mask *= mask[..., None]
-
-    return RNA(
-        atom_positions=atom_positions,
-        atom_mask=atom_mask,
-        nttype=aatype,
-        nt_index=np.arange(len(aatype)),
-        b_factors=None,
-    )
-
-# TODO
 def to_pdb(rna: RNA) -> str:
     """Converts a `RNA` instance to a PDB string.
 
@@ -221,8 +100,7 @@ def to_pdb(rna: RNA) -> str:
     Returns:
       PDB string.
     """
-    restypes = nucleotide_constants.nttypes + ['X']
-    # res_1to3 = lambda r: residue_constants.restype_1to3.get(restypes[r], 'UNK')
+    restypes = nucleotide_constants.restypes + ['X']
     res_1to3 = dict(zip([i for i in range(len(restypes))], restypes))
     atom_types = nucleotide_constants.atom_types
 
@@ -231,11 +109,11 @@ def to_pdb(rna: RNA) -> str:
     atom_mask = rna.atom_mask
     nttype = rna.nttype
     atom_positions = rna.atom_positions
-    residue_index = rna.nt_index.astype(np.int32)
+    residue_index = rna.res_index.astype(np.int32)
     chain_index = rna.chain_index.astype(np.int32)
     b_factors = rna.b_factors
 
-    if np.any(nttype > nucleotide_constants.nttype_num):
+    if np.any(nttype > nucleotide_constants.restype_num):
         raise ValueError('Invalid aatypes.')
 
     # Construct a mapping from chain integer indices to chain ID strings.
@@ -249,8 +127,6 @@ def to_pdb(rna: RNA) -> str:
     pdb_lines.append('MODEL     1')
     atom_index = 1
     last_chain_index = chain_index[0]
-    
-    # print('chain_index', chain_index, 'last chain index', last_chain_index, nttype)
     
     # Add all atom sites.
     for i in range(nttype.shape[0]):
@@ -272,8 +148,6 @@ def to_pdb(rna: RNA) -> str:
             
             if np.abs(sum(pos)) < 1e-4:
                 continue
-            
-            # print(pos.shape, type(pos))
 
             record_type = 'ATOM'
             name = atom_name if len(atom_name) == 4 else f' {atom_name}'
@@ -318,7 +192,6 @@ def ideal_atom_mask(Rna: RNA) -> np.ndarray:
     """
     return nucleotide_constants.STANDARD_ATOM_MASK[Rna.nttype]
 
-# TODO
 def from_prediction(
     features: FeatureDict,
     result: ModelOutput,
@@ -341,21 +214,15 @@ def from_prediction(
     if 'asym_id' in features:
         chain_index = _maybe_remove_leading_dim(features['asym_id'])
     else:
-        chain_index = np.zeros_like(_maybe_remove_leading_dim(features['nttype']))
+        chain_index = np.zeros_like(_maybe_remove_leading_dim(features['butype']))
 
     if b_factors is None:
         b_factors = np.zeros_like(result['final_atom_mask'])
 
     return RNA(
-        # remove recycling dim
-        nttype=_maybe_remove_leading_dim(features['nttype'])[0],
-        # nttype=_maybe_remove_leading_dim(features['nttype']),
-        atom_positions=result['final_atom_positions_pred'][0],
-        atom_mask=result['final_atom_mask'][0],
-        # remove recycling dim
-        nt_index=(_maybe_remove_leading_dim(features['nt_index']) + 1)[0],
-        # nt_index=(_maybe_remove_leading_dim(features['nt_index']) + 1),
-        # remove recycling dim
-        # chain_index=chain_index,
-        chain_index=chain_index[0],
-        b_factors=b_factors[0])
+        nttype=_maybe_remove_leading_dim(features['butype']),
+        atom_positions=result['final_atom_positions'],
+        atom_mask=result['final_atom_mask'],
+        res_index=(_maybe_remove_leading_dim(features['residue_index']) + 1),
+        chain_index=chain_index,
+        b_factors=b_factors)

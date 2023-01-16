@@ -19,7 +19,7 @@ import argparse
 import numpy as np
 import torch
 
-from opencomplex.config import model_config
+from opencomplex.config.config import model_config
 from opencomplex.model.model import AlphaFold
 from opencomplex.utils.import_weights import (
     Param, 

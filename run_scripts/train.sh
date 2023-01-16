@@ -40,7 +40,7 @@ echo "master_ip: $MASTER_ADDR"
 ulimit -n 40960
 
 # =================== monomer dataset example ==========================
-# workdir=/sharefs/baaihealth/public_datasets/CASP/dataset0225/
+workdir=/sharefs/baaihealth/public_datasets/CASP/dataset0225/
 # mmcif_dir=$workdir/train/mmcif
 # features_dir=$workdir/train/features
 # val_mmcif_dir=$workdir/eval/mmcif
@@ -71,20 +71,35 @@ ulimit -n 40960
 # ======================================================================
 
 # =================== RNA dataset example ==========================
-workdir=/sharefs/baaihealth/public_datasets/RNA/uni_test/msa_test
-mmcif_dir=$workdir/train_no_puzzle/mmcif
-features_dir=$workdir/train_no_puzzle/feature
-val_mmcif_dir=$workdir/validation_puzzle/mmcif
-val_features_dir=$workdir/validation_puzzle/feature
-train_label_dir="--train_label_dir $workdir/train_no_puzzle/label"
-val_label_dir="--val_label_dir $workdir/validation_puzzle/label"
+workdir=/sharefs/baaihealth/public_datasets/RNA/data_ready_all
+mmcif_dir=$workdir/mmcif
+features_dir=$workdir/feature
+val_mmcif_dir=$workdir/mmcif
+val_features_dir=$workdir/feature
+train_label_dir="--train_label_dir $workdir/label"
+val_label_dir="--val_label_dir $workdir/label"
 
 config_preset=rna
 
 complex_type=RNA
-wandb_project=rna
+
+wandb_project=RNA
 # ======================================================================
 
+
+# =================== Complex dataset example ==========================
+workdir=/share/project/RNA/complex
+mmcif_dir=$workdir/mmcif/all
+features_dir=$workdir/monomeric
+val_mmcif_dir=$workdir/mmcif/all
+val_features_dir=$workdir/monomeric
+
+config_preset=mix
+
+complex_type=mix
+
+wandb_project=complex
+# ======================================================================
 
 # in multi-gpu settings, the seed must be specified
 seed=42
@@ -105,7 +120,7 @@ experiment_name="my_experiment"
 # debug="--debug"
 
 cmd="
-MASTER_ADDR=$MASTER_ADDR MASTER_PORT=12345 WORLD_SIZE=$RLAUNCH_REPLICA_TOTAL NODE_RANK=$RLAUNCH_REPLICA
+MASTER_ADDR=$MASTER_ADDR MASTER_PORT=12341 WORLD_SIZE=$RLAUNCH_REPLICA_TOTAL NODE_RANK=$RLAUNCH_REPLICA
 python train_opencomplex.py
     --train_data_dir ${mmcif_dir}
     --train_feature_dir ${features_dir}

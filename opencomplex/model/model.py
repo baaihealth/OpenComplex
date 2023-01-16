@@ -41,6 +41,7 @@ from opencomplex.model.heads import (
 )
 from opencomplex.model.structure_module import StructureModule
 from opencomplex.model.structure_module_rna import StructureModuleRNA
+from opencomplex.model.structure_module_xyz import StructureModuleXYZ
 from opencomplex.model.template import (
     TemplatePairStack,
     TemplatePointwiseAttention,
@@ -50,16 +51,14 @@ import opencomplex.np.nucleotide_constants as nucleotide_constants
 import opencomplex.np.residue_constants as residue_constants
 from opencomplex.utils.feats import (
     build_extra_msa_feat,
-    atom14_to_atom37,
-)
-from opencomplex.utils.feats_rna import (
-    atom23_to_atom27_train,
+    dense_atom_to_all_atom,
 )
 from opencomplex.utils.tensor_utils import (
     add,
     dict_multimap,
     tensor_tree_map,
 )
+from opencomplex.utils.complex_utils import ComplexType, split_protein_rna_pos
 
 
 class OpenComplex(nn.Module):
@@ -133,15 +132,22 @@ class OpenComplex(nn.Module):
             **self.config["evoformer_stack"],
         )
 
-        if self.complex_type == "protein":
+        if self.complex_type == ComplexType.PROTEIN:
             self.structure_module = StructureModule(
                 **self.config["structure_module"],
             )
             self.aux_heads = AuxiliaryHeads(
                 self.config["heads"],
             )
-        else:
+        elif self.complex_type == ComplexType.RNA:
             self.structure_module = StructureModuleRNA(
+                **self.config["structure_module"],
+            )
+            self.aux_heads = AuxiliaryHeadsRNA(
+                self.config["heads"],
+            )
+        else:
+            self.structure_module = StructureModuleXYZ(
                 **self.config["structure_module"],
             )
             self.aux_heads = AuxiliaryHeadsRNA(
@@ -253,7 +259,7 @@ class OpenComplex(nn.Module):
             )
 
         x_prev = pseudo_beta_fn(
-            feats["butype"], x_prev, None, complex_type=self.complex_type
+            feats, feats["butype"], x_prev, None, complex_type=self.complex_type
         ).to(dtype=z.dtype)
 
         # The recycling embedder is memory-intensive, so we offload first
@@ -333,7 +339,7 @@ class OpenComplex(nn.Module):
         # Embed extra MSA features + merge with pairwise embeddings
         if self.config.extra_msa.enabled:
             # [*, S_e, N, C_e]
-            a = self.extra_msa_embedder(build_extra_msa_feat(feats))
+            a = self.extra_msa_embedder(build_extra_msa_feat(feats, self.complex_type))
 
             if(self.globals.offload_inference):
                 # To allow the extra MSA stack (and later the evoformer) to
@@ -400,25 +406,26 @@ class OpenComplex(nn.Module):
 
         del z
 
+        poses = {}
+
+        if self.complex_type == ComplexType.MIX:
+            protein_pos, rna_pos = split_protein_rna_pos(feats, self.complex_type)
+            poses = {"protein_pos": protein_pos, "rna_pos": rna_pos}
+
         # Predict 3D structure
         outputs["sm"] = self.structure_module(
             outputs,
             feats["butype"],
             mask=feats["seq_mask"].to(dtype=s.dtype),
+            **poses,
             inplace_safe=inplace_safe,
             _offload_inference=self.globals.offload_inference,
         )
 
-        if self.complex_type == "protein":
-            outputs["final_atom_positions"] = atom14_to_atom37(
-                outputs["sm"]["positions"][-1], feats
-            )
-            outputs["final_atom_mask"] = feats["atom37_atom_exists"]
-        else:
-            outputs["final_atom_positions"] = atom23_to_atom27_train(
-                outputs["sm"]["positions"][-1], feats
-            )
-            outputs["final_atom_mask"] = feats["atom27_atom_exists"]
+        outputs["final_atom_positions"] = dense_atom_to_all_atom(
+            outputs["sm"]["positions"][-1], feats
+        )
+        outputs["final_atom_mask"] = feats["all_atom_exists"]
         outputs["final_affine_tensor"] = outputs["sm"]["frames"][-1]
 
         # Save embeddings for use during the next recycling iteration
@@ -431,6 +438,17 @@ class OpenComplex(nn.Module):
 
         # [*, N, 3]
         x_prev = outputs["final_atom_positions"]
+
+        (
+            outputs["pred_pseudo_beta"],
+            outputs["pred_pseudo_beta_mask"]
+        ) = pseudo_beta_fn(
+            feats,
+            feats["butype"],
+            outputs["final_atom_positions"],
+            outputs["final_atom_mask"],
+            self.complex_type
+        )
 
         return outputs, m_1_prev, z_prev, x_prev
 

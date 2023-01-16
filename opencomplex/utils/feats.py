@@ -18,11 +18,12 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-from typing import Dict
+from typing import Dict, Union
 from einops import rearrange
 
 from opencomplex.np import protein
 import opencomplex.np.residue_constants as rc
+from opencomplex.utils.complex_utils import ComplexType
 from opencomplex.utils.rigid_utils import Rotation, Rigid
 from opencomplex.utils.tensor_utils import (
     batched_gather,
@@ -32,20 +33,20 @@ from opencomplex.utils.tensor_utils import (
 )
 
 
-def atom14_to_atom37(atom14, batch):
-    atom37_data = batched_gather(
-        atom14,
-        batch["residx_atom37_to_atom14"],
+def dense_atom_to_all_atom(dense_atom, batch):
+    all_atom_data = batched_gather(
+        dense_atom,
+        batch["residx_all_to_dense"],
         dim=-2,
-        no_batch_dims=len(atom14.shape[:-2]),
+        no_batch_dims=len(dense_atom.shape[:-2]),
     )
 
-    atom37_data = atom37_data * batch["atom37_atom_exists"][..., None]
+    all_atom_data = all_atom_data * batch["all_atom_exists"][..., None]
 
-    return atom37_data
+    return all_atom_data
 
 
-def build_template_angle_feat(template_feats):
+def build_template_angle_feat(template_feats, c_butype=rc.restype_num):
     template_butype = template_feats["template_butype"]
     torsion_angles_sin_cos = template_feats["template_torsion_angles_sin_cos"]
     torsion_angles_mask = template_feats["template_torsion_angles_mask"]
@@ -55,7 +56,7 @@ def build_template_angle_feat(template_feats):
         ]
         template_angle_feat = torch.cat(
             [
-                nn.functional.one_hot(template_butype, 22),
+                nn.functional.one_hot(template_butype, c_butype + 2),
                 rearrange(torsion_angles_sin_cos, '... a b -> ... (a b)', b = 2),
                 rearrange(alt_torsion_angles_sin_cos, '... a b -> ... (a b)', b = 2),
                 torsion_angles_mask,
@@ -65,7 +66,7 @@ def build_template_angle_feat(template_feats):
     else:
         template_angle_feat = torch.cat(
             [
-                nn.functional.one_hot(template_butype, 22),
+                nn.functional.one_hot(template_butype, c_butype + 2),
                 torsion_angles_sin_cos[..., 0],
                 torsion_angles_sin_cos[..., 1],
                 torsion_angles_mask,
@@ -81,6 +82,7 @@ def build_template_pair_feat(
     min_bin, max_bin, no_bins, 
     multichain_mask=None,
     use_unit_vector=False, 
+    c_butype=rc.restype_num,
     eps=1e-20, inf=1e8
 ):
     template_mask = batch["template_pseudo_beta_mask"]
@@ -101,7 +103,7 @@ def build_template_pair_feat(
 
     butype_one_hot = nn.functional.one_hot(
         batch["template_butype"],
-        rc.restype_num + 2,
+        c_butype + 2,
     )
 
     n_res = batch["template_butype"].shape[-1]
@@ -151,8 +153,9 @@ def build_template_pair_feat(
     return act
 
 
-def build_extra_msa_feat(batch):
-    msa_1hot = nn.functional.one_hot(batch["extra_msa"], 23)
+def build_extra_msa_feat(batch, complex_type=ComplexType.PROTEIN):
+    num_class = 27 if complex_type == ComplexType.MIX else 23
+    msa_1hot = nn.functional.one_hot(batch["extra_msa"], num_class)
     msa_feat = [
         msa_1hot,
         batch["extra_has_deletion"].unsqueeze(-1),

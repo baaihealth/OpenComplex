@@ -24,7 +24,7 @@ from opencomplex.np import (
     protein,
     residue_constants,
 )
-import opencomplex.utils.loss as loss
+import opencomplex.loss.loss_fns_protein as loss
 from opencomplex.np.relax import cleanup, utils
 import ml_collections
 import numpy as np
@@ -212,7 +212,7 @@ def make_atom14_positions(prot):
     """Constructs denser atom positions (14 dimensions instead of 37)."""
     restype_atom14_to_atom37 = []  # mapping (restype, atom14) --> atom37
     restype_atom37_to_atom14 = []  # mapping (restype, atom37) --> atom14
-    restype_atom14_mask = []
+    aatype_atom14_mask = []
 
     for rt in residue_constants.restypes:
         atom_names = residue_constants.restype_name_to_atom14_names[
@@ -234,14 +234,14 @@ def make_atom14_positions(prot):
             ]
         )
 
-        restype_atom14_mask.append(
+        aatype_atom14_mask.append(
             [(1.0 if name else 0.0) for name in atom_names]
         )
 
     # Add dummy mapping for restype 'UNK'.
     restype_atom14_to_atom37.append([0] * 14)
     restype_atom37_to_atom14.append([0] * 37)
-    restype_atom14_mask.append([0.0] * 14)
+    aatype_atom14_mask.append([0.0] * 14)
 
     restype_atom14_to_atom37 = np.array(
         restype_atom14_to_atom37, dtype=np.int32
@@ -249,12 +249,12 @@ def make_atom14_positions(prot):
     restype_atom37_to_atom14 = np.array(
         restype_atom37_to_atom14, dtype=np.int32
     )
-    restype_atom14_mask = np.array(restype_atom14_mask, dtype=np.float32)
+    aatype_atom14_mask = np.array(aatype_atom14_mask, dtype=np.float32)
 
     # Create the mapping for (residx, atom14) --> atom37, i.e. an array
     # with shape (num_res, 14) containing the atom37 indices for this protein.
     residx_atom14_to_atom37 = restype_atom14_to_atom37[prot["aatype"]]
-    residx_atom14_mask = restype_atom14_mask[prot["aatype"]]
+    residx_atom14_mask = aatype_atom14_mask[prot["aatype"]]
 
     # Create a mask for known ground truth positions.
     residx_atom14_gt_mask = residx_atom14_mask * np.take_along_axis(
@@ -281,15 +281,15 @@ def make_atom14_positions(prot):
     prot["residx_atom37_to_atom14"] = residx_atom37_to_atom14.astype(np.int64)
 
     # Create the corresponding mask.
-    restype_atom37_mask = np.zeros([21, 37], dtype=np.float32)
+    aatype_atom37_mask = np.zeros([21, 37], dtype=np.float32)
     for restype, restype_letter in enumerate(residue_constants.restypes):
         restype_name = residue_constants.restype_1to3[restype_letter]
         atom_names = residue_constants.residue_atoms[restype_name]
         for atom_name in atom_names:
             atom_type = residue_constants.atom_order[atom_name]
-            restype_atom37_mask[restype, atom_type] = 1
+            aatype_atom37_mask[restype, atom_type] = 1
 
-    residx_atom37_mask = restype_atom37_mask[prot["aatype"]]
+    residx_atom37_mask = aatype_atom37_mask[prot["aatype"]]
     prot["atom37_atom_exists"] = residx_atom37_mask
 
     # As the atom naming is ambiguous for 7 of the 20 amino acids, provide

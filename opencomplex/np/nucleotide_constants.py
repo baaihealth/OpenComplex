@@ -6,6 +6,7 @@ from typing import Mapping, List, Tuple
 from importlib import resources
 
 import numpy as np
+import torch
 import tree
 
 # Distance from one C4 to next C4 [trans configuration: omega = 180].
@@ -699,3 +700,60 @@ def make_atom23_dists_bounds(
         "upper_bound": restype_atom23_bond_upper_bound,  # shape (5,23,23)
         "stddev": restype_atom23_bond_stddev,  # shape (5,23,23)
     }
+def restype_to_str_sequence(butype):
+    return ''.join([
+        restypes_with_x[butype[i]] 
+        for i in range(len(butype))
+    ])
+
+
+def get_restype_atom_mapping(device="cpu"):
+    restype_atom23_to_atom27 = []
+    restype_atom27_to_atom23 = []
+    restype_atom23_mask = []
+
+    for rt in restypes:
+        atom_names = restype_name_to_atom23_names[rt]
+        restype_atom23_to_atom27.append(
+            [(atom_order[name] if name else 0) for name in atom_names]
+        )
+        atom_name_to_idx23 = {name: i for i, name in enumerate(atom_names)}
+        restype_atom27_to_atom23.append(
+            [
+                (atom_name_to_idx23[name] if name in atom_name_to_idx23 else 0)
+                for name in atom_types
+            ]
+        )
+
+        restype_atom23_mask.append(
+            [(1.0 if name else 0.0) for name in atom_names]
+        )
+
+    restype_atom23_to_atom27 = torch.tensor(
+        restype_atom23_to_atom27,
+        dtype=torch.int32,
+        device=device,
+    )
+    restype_atom27_to_atom23 = torch.tensor(
+        restype_atom27_to_atom23,
+        dtype=torch.int32,
+        device=device,
+    )
+    restype_atom23_mask = torch.tensor(
+        restype_atom23_mask,
+        dtype=torch.float32,
+        device=device,
+    )
+
+    # create the corresponding mask
+    restype_atom27_mask = torch.zeros(
+        [4, 27], dtype=torch.float32, device=device
+    )
+    for restype, restype_letter in enumerate(restypes):
+        restype_name = restype_letter
+        atom_names = residue_atoms[restype_name]
+        for atom_name in atom_names:
+            atom_type = atom_order[atom_name]
+            restype_atom27_mask[restype, atom_type] = 1
+
+    return restype_atom23_to_atom27, restype_atom27_to_atom23, restype_atom23_mask, restype_atom27_mask

@@ -18,34 +18,38 @@ from functools import partial
 import torch
 
 from opencomplex.data import data_transforms
+from opencomplex.utils.complex_utils import ComplexType
 
 
 def nonensembled_transform_fns(common_cfg, mode_cfg):
     """Input pipeline data transformers that are not ensembled."""
-    complex_type = common_cfg.complex_type
-    c_butype = common_cfg.c_butype
-    unknown_type = common_cfg.get("unknown_type", -1)
+    complex_type = ComplexType[common_cfg.complex_type]
     transforms = [
+        data_transforms.fix_data_type,
         data_transforms.cast_to_64bit_ints,
-        data_transforms.correct_msa_restypes(complex_type),
+        data_transforms.cast_to_32bit_floats,
+        data_transforms.reorder_chains(common_cfg.feat),
         data_transforms.squeeze_features,
-        data_transforms.randomly_replace_msa_with_unknown(c_butype=c_butype, replace_proportion=0.0),
-        data_transforms.make_seq_mask(unknown_type),
+        data_transforms.split_pos(complex_type),
+        data_transforms.map_butype,
+        data_transforms.correct_msa_restypes(complex_type),
+        data_transforms.randomly_replace_msa_with_unknown(replace_proportion=0.0),
+        data_transforms.make_seq_mask,
         data_transforms.make_msa_mask,
-        data_transforms.make_hhblits_profile(c_butype),
+        data_transforms.make_hhblits_profile,
     ]
     if common_cfg.use_templates:
         transforms.extend(
             [
-                data_transforms.fix_templates_butype,
+                data_transforms.fix_templates_butype(complex_type=complex_type),
                 data_transforms.make_template_mask,
-                data_transforms.make_pseudo_beta(prefix="template_", complex_type=complex_type),
+                data_transforms.make_pseudo_beta(prefix="template_"),
             ]
         )
         if common_cfg.use_template_torsion_angles:
             transforms.extend(
                 [
-                    data_transforms.all_atom_to_torsion_angles(prefix="template_", complex_type=complex_type),
+                    data_transforms.all_atom_to_torsion_angles(prefix="template_"),
                 ]
             )
 
@@ -58,12 +62,12 @@ def nonensembled_transform_fns(common_cfg, mode_cfg):
     if mode_cfg.supervised:
         transforms.extend(
             [
-                data_transforms.make_dense_atom_positions(complex_type),
-                data_transforms.all_atom_to_frames(complex_type),
-                data_transforms.all_atom_to_torsion_angles(prefix="", complex_type=complex_type),
-                data_transforms.make_pseudo_beta(prefix="", complex_type=complex_type),
-                data_transforms.get_backbone_frames(complex_type),
-                data_transforms.get_chi_angles(complex_type),
+                data_transforms.make_dense_atom_positions,
+                data_transforms.all_atom_to_frames(),
+                data_transforms.all_atom_to_torsion_angles(prefix=""),
+                data_transforms.make_pseudo_beta(prefix=""),
+                data_transforms.get_backbone_frames,
+                data_transforms.get_chi_angles,
             ]
         )
 
@@ -92,7 +96,6 @@ def ensembled_transform_fns(common_cfg, mode_cfg, ensemble_seed):
     msa_seed = None
     if(not common_cfg.resample_msa_in_recycling):
         msa_seed = ensemble_seed
-    
     transforms.append(
         data_transforms.sample_msa(
             max_msa_clusters, 
@@ -107,13 +110,13 @@ def ensembled_transform_fns(common_cfg, mode_cfg, ensemble_seed):
         # the masked locations and secret corrupted locations.
         transforms.append(
             data_transforms.make_masked_msa(
-                common_cfg.masked_msa, mode_cfg.masked_msa_replace_fraction, c_butype=common_cfg.c_butype
+                common_cfg.masked_msa, mode_cfg.masked_msa_replace_fraction 
             )
         )
 
     if common_cfg.msa_cluster_features:
         transforms.append(data_transforms.nearest_neighbor_clusters())
-        transforms.append(data_transforms.summarize_clusters())
+        transforms.append(data_transforms.summarize_clusters)
 
     # Crop after creating the cluster profiles.
     if max_extra_msa:
@@ -121,7 +124,7 @@ def ensembled_transform_fns(common_cfg, mode_cfg, ensemble_seed):
     else:
         transforms.append(data_transforms.delete_extra_msa)
 
-    transforms.append(data_transforms.make_msa_feat(c_butype=common_cfg.c_butype))
+    transforms.append(data_transforms.make_msa_feat)
 
     crop_feats = dict(common_cfg.feat)
 
@@ -173,6 +176,7 @@ def process_tensors_from_config(tensors, common_cfg, mode_cfg):
     no_templates = True
     if("template_butype" in tensors):
         no_templates = tensors["template_butype"].shape[0] == 0
+    tensors["num_butype"] = torch.tensor(common_cfg.c_butype)
 
     nonensembled = nonensembled_transform_fns(
         common_cfg,

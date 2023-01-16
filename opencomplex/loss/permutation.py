@@ -2,8 +2,7 @@ from collections import defaultdict
 import random
 
 from Bio.SVDSuperimposer import SVDSuperimposer
-from opencomplex.config import NUM_FULL_RES
-from opencomplex.np import residue_constants as rc
+from opencomplex.config.references import NUM_FULL_RES
 
 import torch
 
@@ -35,8 +34,8 @@ def get_transform(pred, gt, mask, device):
 
 
 def get_chains(
-    all_atom_positions,
-    all_atom_mask,
+    pseudo_beta,
+    pseudo_beta_mask,
     asym_id,
     entity_id,
     residue_index=None,
@@ -46,67 +45,75 @@ def get_chains(
 ):
     chains = []
     unique_asym_ids = torch.unique(asym_id).tolist()
-    ca_pos = rc.atom_order["CA"]
+    pad_chain = None
 
     for chain_id in unique_asym_ids:
-        if chain_id == 0.:
-            continue
-
         idx = torch.where(asym_id == chain_id)
 
         chain = {
             "chain_index": int(chain_id),
-            "all_atom_positions": all_atom_positions[idx],
-            "all_atom_mask": all_atom_mask[idx],
-            "ca_atom_positions": all_atom_positions[idx][:, ca_pos],
-            "ca_atom_mask": all_atom_mask[idx][:, ca_pos],
+            "pseudo_beta": pseudo_beta[idx],
+            "pseudo_beta_mask": pseudo_beta_mask[idx],
             "entity_id": int(entity_id[idx][0]),
         }
-        chain["length"] = torch.sum(chain["ca_atom_mask"])
+        chain["length"] = torch.sum(chain["pseudo_beta_mask"])
         if residue_index is not None:
             chain["residue_index"] = residue_index[idx]
         if all_gt_feats is not None:
             for k, v in all_gt_feats.items():
                 if k not in feat_schema or NUM_FULL_RES not in feat_schema[k]:
                     continue
-                schema = feat_schema[k]
-                slices = []
-                for dim_schema, dim in zip(schema, v.shape[1:]):
+                chain[k] = v[batch_idx]
+                for i, dim_schema in enumerate(feat_schema[k]):
                     if dim_schema == NUM_FULL_RES:
-                        slices.append(idx[0])
-                    else:
-                        slices.append(slice(0, dim))
-                chain[k] = v[batch_idx][slices]
-        
-        chains.append(chain)
+                        chain[k] = torch.index_select(chain[k], i, idx[0])
 
-    return chains
+            chain["all_atom_positions"] = chain["origin_all_atom_positions"]
+            chain["all_atom_mask"] = chain["origin_all_atom_mask"]
+        
+        if chain_id == 0.:
+            pad_chain = chain
+        else:
+            chains.append(chain)
+
+    return chains, pad_chain
 
     
 def get_anchor_chain(gt_chains, pred_chains):
     candidates = []
     for pred_chain in pred_chains:
         num_homo_chains = 0
+        max_gt_length = 0
         for gt_chain in gt_chains:
             if gt_chain["entity_id"] == pred_chain["entity_id"]:
                 num_homo_chains += 1
+                max_gt_length = max(max_gt_length, gt_chain["length"])
         candidates.append((
             num_homo_chains,
             -pred_chain["length"],
+            -max_gt_length,
             pred_chain["entity_id"]
         ))
 
     candidates = sorted(candidates)
     choice = None
     for c in candidates:
-        if -c[1] >= 8:
-            choice = c[2]
+        if -c[1] >= 8 and -c[2] >= 8:
+            choice = c[3]
             break
     if choice is None:
-        choice = candidates[0][2]
+        choice = candidates[0][3]
 
+    # add minimum chain length restriction to make superimposition more accurate
     gt_anchor_chains = [c for c in gt_chains if c["entity_id"] == choice and c["length"] >= 8]
     pred_anchor_chains = [c for c in pred_chains if c["entity_id"] == choice and c["length"] >= 8]
+
+    # fallback if all candidate chains are very short.
+    if len(gt_anchor_chains) == 0:
+        gt_anchor_chains = [c for c in gt_chains if c["entity_id"] == choice]
+    if len(pred_anchor_chains) == 0:
+        pred_anchor_chains = [c for c in pred_chains if c["entity_id"] == choice]
+
 
     return random.choice(gt_anchor_chains), pred_anchor_chains
     
@@ -123,8 +130,6 @@ def find_optimal_alignment(
 
     Args:
         chains (list of tuple): chain start and end idx
-        pred_ca_positions (tensor): [N_res, 3]
-        gt_ca_positions (tensor): [N_res, 3]
         mask (tensor): [N_res]
         rot (tensor): [3, 3]
         tran (tensor): 3
@@ -152,10 +157,10 @@ def find_optimal_alignment(
             if gt_chain.get("choosed", False) or gt_chain["entity_id"] != pred_chain["entity_id"]:
                 continue
             residue_index = pred_chain["residue_index"]
-            mask = pred_chain["ca_atom_mask"] * gt_chain["ca_atom_mask"][residue_index]
+            mask = pred_chain["pseudo_beta_mask"] * gt_chain["pseudo_beta_mask"][residue_index]
             mask_idx = torch.where(mask == 1.)
-            gt_ca_atom_positions = gt_chain["ca_atom_positions"][residue_index]
-            pred_ca_atom_positions = pred_chain["ca_atom_positions"]
+            gt_ca_atom_positions = gt_chain["pseudo_beta"][residue_index]
+            pred_ca_atom_positions = pred_chain["pseudo_beta"]
 
             dist = torch.sum(
                 (
@@ -194,18 +199,18 @@ def multichain_permutation_alignment(batch, out, feat_schema):
 
     batch_update = defaultdict(list)
     for batch_idx in range(batch_size):
-        gt_chains = get_chains(
-            batch['origin_all_atom_positions'][batch_idx],
-            batch['origin_all_atom_mask'][batch_idx],
+        gt_chains, gt_pad_chain = get_chains(
+            batch["pseudo_beta"][batch_idx],
+            batch["pseudo_beta_mask"][batch_idx],
             batch['origin_asym_id'][batch_idx],
             batch['origin_entity_id'][batch_idx],
             all_gt_feats=batch,
             feat_schema=feat_schema,
             batch_idx=batch_idx)
 
-        pred_chains = get_chains(
-            out['final_atom_positions'][batch_idx],
-            out['final_atom_mask'][batch_idx],
+        pred_chains, pred_pad_chain = get_chains(
+            out["pred_pseudo_beta"][batch_idx],
+            out["pred_pseudo_beta_mask"][batch_idx],
             batch['asym_id'][batch_idx],
             batch['entity_id'][batch_idx],
             residue_index=batch["residue_index"][batch_idx])
@@ -218,13 +223,14 @@ def multichain_permutation_alignment(batch, out, feat_schema):
                 if gt_chain["chain_index"] == pred_chain["chain_index"]:
                     best_align.append(gt_chain)
                     break
+
         for pred_anchor_chain in pred_anchor_chain_candidates:
             pred_chain_residue_index = pred_anchor_chain["residue_index"]
             try:
                 rot, tran, rmsd_anchor = get_transform(
-                    pred_anchor_chain["ca_atom_positions"],
-                    gt_anchor_chain["ca_atom_positions"][pred_chain_residue_index],
-                    pred_anchor_chain["ca_atom_mask"] * gt_anchor_chain["ca_atom_mask"][pred_chain_residue_index],
+                    pred_anchor_chain["pseudo_beta"],
+                    gt_anchor_chain["pseudo_beta"][pred_chain_residue_index],
+                    pred_anchor_chain["pseudo_beta_mask"] * gt_anchor_chain["pseudo_beta_mask"][pred_chain_residue_index],
                     device=device
                 )
 
@@ -243,6 +249,10 @@ def multichain_permutation_alignment(batch, out, feat_schema):
                 min_rmsd = rmsd
                 best_align = opt_align
 
+        if gt_pad_chain is not None:
+            best_align.append(gt_pad_chain)
+            pred_chains.append(pred_pad_chain)
+            
         aligned_gt_feats = defaultdict(list)
         # print('align: ', [a["chain_index"] for a in best_align], "rmsd: ", min_rmsd)
         for i, choosed_gt_chain in enumerate(best_align):

@@ -24,6 +24,8 @@ from opencomplex.np import residue_constants
 from Bio.PDB import PDBParser
 import numpy as np
 
+from opencomplex.utils.complex_utils import ComplexType
+
 FeatureDict = Mapping[str, np.ndarray]
 ModelOutput = Mapping[str, Any]  # Is a nested dict.
 
@@ -68,6 +70,12 @@ class Protein:
 
     # Chain corresponding to each parent
     parents_chain_index: Optional[Sequence[int]] = None
+
+    def get_chain_sequence(self, idx):
+        return residue_constants.restype_to_str_sequence(self.aatype[self.chain_index==idx])
+
+    def get_chain_type(self, _):
+        return ComplexType.PROTEIN
 
 
 def from_pdb_string(pdb_str: str, chain_id: Optional[str] = None) -> Protein:

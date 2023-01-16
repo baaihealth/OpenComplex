@@ -17,7 +17,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import unittest
-from opencomplex.config import model_config
+from opencomplex.config.config import model_config
 from opencomplex.data import data_transforms
 from opencomplex.model.model import AlphaFold
 import opencomplex.utils.feats as feats

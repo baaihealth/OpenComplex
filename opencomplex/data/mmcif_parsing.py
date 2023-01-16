@@ -29,6 +29,7 @@ import numpy as np
 from opencomplex.data.errors import MultipleChainsError
 import opencomplex.np.residue_constants as residue_constants
 import opencomplex.np.nucleotide_constants as nucleotide_constants
+from opencomplex.utils.complex_utils import ComplexType
 
 
 # Type aliases:
@@ -176,7 +177,6 @@ def mmcif_loop_to_dict(
 
 def parse(
     *, file_id: str, mmcif_string: str, catch_all_errors: bool = True,
-    chain_type="protein",
 ) -> ParsingResult:
     """Entry point, parses an mmcif_string.
 
@@ -210,14 +210,14 @@ def parse(
 
         # Determine the chains, and their start numbers according to the
         # internal mmCIF numbering scheme (likely but not guaranteed to be 1).
-        valid_chains = _get_valid_chains(parsed_info=parsed_info, chain_type=chain_type)
+        valid_chains = _get_valid_chains(parsed_info=parsed_info)
         if not valid_chains:
             return ParsingResult(
                 None, {(file_id, ""): "No valid chains found in this file."}
             )
         seq_start_num = {
             chain_id: min([monomer.num for monomer in seq])
-            for chain_id, seq in valid_chains.items()
+            for chain_id, (seq, _) in valid_chains.items()
         }
 
         # Loop over the atoms for which we have coordinates. Populate two mappings:
@@ -266,7 +266,7 @@ def parse(
                 seq_to_structure_mappings[atom.author_chain_id] = current
 
         # Add missing residue information to seq_to_structure_mappings.
-        for chain_id, seq_info in valid_chains.items():
+        for chain_id, (seq_info, _) in valid_chains.items():
             author_chain = mmcif_to_author_chain_id[chain_id]
             current_mapping = seq_to_structure_mappings[author_chain]
             for idx, monomer in enumerate(seq_info):
@@ -279,11 +279,11 @@ def parse(
                     )
 
         author_chain_to_sequence = {}
-        for chain_id, seq_info in valid_chains.items():
+        for chain_id, (seq_info, chain_type) in valid_chains.items():
             author_chain = mmcif_to_author_chain_id[chain_id]
             seq = []
             for monomer in seq_info:
-                if chain_type == "protein":
+                if chain_type == ComplexType.PROTEIN:
                     code = SCOPData.protein_letters_3to1.get(monomer.id, "X")
                     seq.append(code if len(code) == 1 else "X")
                 else: 
@@ -380,7 +380,7 @@ def _get_atom_site_list(parsed_info: MmCIFDict) -> Sequence[AtomSite]:
 
 
 def _get_valid_chains(
-    *, parsed_info: Mapping[str, Any], chain_type="protein",
+    *, parsed_info: Mapping[str, Any]
 ) -> Mapping[ChainId, Sequence[Monomer]]:
     """Extracts polymer information for valid chains only.
 
@@ -418,18 +418,23 @@ def _get_valid_chains(
 
     # Identify and return the valid protein chains.
     valid_chains = {}
-    target = "peptide" if chain_type == "protein" else "RNA"
+    targets = {"peptide": ComplexType.PROTEIN, "RNA": ComplexType.RNA}
     for entity_id, seq_info in polymers.items():
         chain_ids = entity_to_mmcif_chains[entity_id]
 
-        if any(
-            [
-                target in chem_comps[monomer.id]["_chem_comp.type"]
-                for monomer in seq_info
-            ]
-        ):
+        chain_type = None
+        for t in targets:
+            if any(
+                [
+                    t in chem_comps[monomer.id]["_chem_comp.type"]
+                    for monomer in seq_info
+                ]
+            ):
+                chain_type = targets[t]
+        
+        if chain_type is not None:
             for chain_id in chain_ids:
-                valid_chains[chain_id] = seq_info
+                valid_chains[chain_id] = (seq_info, chain_type)
     return valid_chains
 
 
@@ -442,7 +447,7 @@ def get_atom_coords(
     mmcif_object: MmcifObject,
     chain_id: str,
     _zero_center_positions: bool = False,
-    chain_type="protein",
+    chain_type=ComplexType.PROTEIN,
 ) -> Tuple[np.ndarray, np.ndarray]:
     # Locate the right chain
     chains = list(mmcif_object.structure.get_chains())
@@ -453,7 +458,7 @@ def get_atom_coords(
         )
     chain = relevant_chains[0]
 
-    constants = residue_constants if chain_type == "protein" else nucleotide_constants
+    constants = residue_constants if chain_type == ComplexType.PROTEIN else nucleotide_constants
 
     # Extract the coordinates
     num_res = len(mmcif_object.chain_to_seqres[chain_id])
@@ -469,7 +474,7 @@ def get_atom_coords(
         res_at_position = mmcif_object.seqres_to_structure[chain_id][residue_index]
         if not res_at_position.is_missing:
             # TODO: only keep known NTs
-            if chain_type == "RNA" and res_at_position.name not in ['A', 'U', 'G', 'C']:
+            if chain_type == ComplexType.RNA and res_at_position.name not in ['A', 'U', 'G', 'C']:
                 continue
             
             res = chain[

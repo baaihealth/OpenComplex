@@ -18,12 +18,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from opencomplex.model.primitives import Linear, LayerNorm
-from opencomplex.utils.loss import (
+from opencomplex.loss.loss_utils import (
     compute_plddt,
     compute_tm,
     compute_predicted_aligned_error,
 )
-
+from einops import rearrange
 
 class AuxiliaryHeads(nn.Module):
     def __init__(self, config):
@@ -264,6 +264,10 @@ class AuxiliaryHeadsRNA(nn.Module):
         self.torsion = Torsion_Head(**config["torsion_head"])
         self.mask_msa = MaskedMSAHead(**config["masked_msa"])
         self.plddt = PerResidueLDDTCaPredictor(**config["lddt"])
+        self.distogram = DistogramHead(**config["distogram"])
+        self.experimentally_resolved = ExperimentallyResolvedHead(
+            **config["experimentally_resolved"],
+        )
         self.config = config
 
     def forward(self, outputs):
@@ -271,11 +275,14 @@ class AuxiliaryHeadsRNA(nn.Module):
 
         lddt_logits = self.plddt(outputs["single"])
         outputs["lddt_logits"] = lddt_logits
-        # TODO: Required for relaxation later on
         outputs["plddt"] = compute_plddt(lddt_logits)
         aux_out["geometry_head"] = self.geometry(outputs["pair"])
         aux_out["torsion_head"] = self.torsion(outputs["single"])
         aux_out["masked_msa_logits"] = self.mask_msa(outputs["msa"])
+        aux_out["distogram_logits"] = self.distogram(outputs["pair"])
+        aux_out["experimentally_resolved_logits"] = self.experimentally_resolved(
+            outputs["single"]
+        )
 
         return aux_out
 
@@ -307,7 +314,6 @@ class Torsion_Head(nn.Module):
         self.linear_out_dis = nn.Linear(self.hidden_dim,self.no_angles*self.angle_bins)
 
     def forward(self, seq_embed):
-        B, N, embed_dim = seq_embed.shape
         seq_embed = self.linear_in(F.relu(seq_embed))
 
         for i in range(self.no_blocks):
@@ -316,7 +322,7 @@ class Torsion_Head(nn.Module):
         seq_embed = F.relu(seq_embed)
 
         angles_dis = self.linear_out_dis(seq_embed)
-        angles_dis = F.log_softmax(angles_dis.contiguous().view(B, N, self.no_angles, self.angle_bins),dim=-1)
+        angles_dis = F.log_softmax(angles_dis.contiguous().view(seq_embed.shape[:-1] + (self.no_angles, self.angle_bins)), dim=-1)
 
         output = {}
         output["angles_dis"] = angles_dis 
@@ -337,19 +343,18 @@ class Geometry_Head(nn.Module):
         self.linear_dis_p = nn.Linear(self.pair_dim,self.dis_bins)
         self.linear_omg = nn.Linear(self.pair_dim,self.omg_bins)
         self.linear_theta = nn.Linear(self.pair_dim,self.theta_bins)
-        # self.linear_phi = nn.Linear(self.pair_dim,self.phi_bins)
 
     def forward(self, pair_embed):
         pred_dis_n = self.linear_dis_n(pair_embed)
-        pred_dis_n = F.log_softmax(pred_dis_n + pred_dis_n.permute(0,2,1,3),dim=-1)
+        pred_dis_n = F.log_softmax(pred_dis_n + rearrange(pred_dis_n, '... h w b -> ... w h b'), dim=-1)
         pred_dis_c4 = self.linear_dis_c4(pair_embed)
-        pred_dis_c4 = F.log_softmax(pred_dis_c4 + pred_dis_c4.permute(0,2,1,3),dim=-1)
+        pred_dis_c4 = F.log_softmax(pred_dis_c4 + rearrange(pred_dis_c4, '... h w b -> ... w h b'), dim=-1)
         pred_dis_p = self.linear_dis_p(pair_embed)
-        pred_dis_p = F.log_softmax(pred_dis_p + pred_dis_p.permute(0,2,1,3),dim=-1)
+        pred_dis_p = F.log_softmax(pred_dis_p + rearrange(pred_dis_p, '... h w b -> ... w h b'), dim=-1)
         pred_omg = self.linear_omg(pair_embed)
-        pred_omg = F.log_softmax(pred_omg + pred_omg.permute(0,2,1,3),dim=-1)
-        pred_theta = F.log_softmax(self.linear_theta(pair_embed),dim=-1)
-        # pred_phi = F.log_softmax(self.linear_phi(pair_embed),dim=-1)
+        pred_omg = F.log_softmax(pred_omg + rearrange(pred_omg, '... h w b -> ... w h b'), dim=-1)
+        pred_theta = self.linear_theta(pair_embed)
+        pred_theta = F.log_softmax(pred_theta + rearrange(pred_theta, '... h w b -> ... w h b'), dim=-1)
 
         output = {}
         output["pred_dis_n"] = pred_dis_n
@@ -357,6 +362,5 @@ class Geometry_Head(nn.Module):
         output["pred_dis_p"] = pred_dis_p
         output["pred_omg"] = pred_omg
         output["pred_theta"] = pred_theta
-        # output["pred_phi"] = pred_phi
 
         return output

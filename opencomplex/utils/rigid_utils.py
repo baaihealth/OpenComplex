@@ -378,6 +378,17 @@ class Rotation:
         else:
             raise ValueError("Both rotations are None")
 
+    def __setitem__(self, index: Any, r: Rotation):
+        if type(index) != tuple:
+            index = (index,)
+
+        if(self._rot_mats is not None and r._rot_mats is not None):
+            self._rot_mats[index + (slice(None), slice(None))] = r._rot_mats
+        elif(self._quats is not None and r._quats is not None):
+            self._quats[index + (slice(None),)] = r._quats
+        else:
+            raise ValueError("Src and dst rotation should both use rot matrix or quats.")
+
     def __mul__(self,
         right: torch.Tensor,
     ) -> Rotation:
@@ -700,6 +711,17 @@ class Rotation:
 
         return Rotation(rot_mats=rot_mats, quats=None) 
 
+    @staticmethod
+    def stack(
+        rs: Sequence[Rotation], 
+        dim: int,
+    ) -> Rigid:
+        rot_mats = [r.get_rot_mats() for r in rs]
+        rot_mats = torch.stack(rot_mats, dim=dim if dim >= 0 else dim - 2)
+
+        return Rotation(rot_mats=rot_mats, quats=None) 
+    
+
     def map_tensor_fn(self, 
         fn: Callable[torch.Tensor, torch.Tensor]
     ) -> Rotation:
@@ -906,6 +928,14 @@ class Rigid:
             self._rots[index],
             self._trans[index + (slice(None),)],
         )
+
+    def __setitem__(self, index: Any, r: Rigid):
+        if type(index) != tuple:
+            index = (index,)
+
+        self._rots[index] = r._rots
+        self._trans[index + (slice(None),)] = r._trans
+        
 
     def __mul__(self,
         right: torch.Tensor,
@@ -1232,6 +1262,18 @@ class Rigid:
         """
         rots = Rotation.cat([t._rots for t in ts], dim) 
         trans = torch.cat(
+            [t._trans for t in ts], dim=dim if dim >= 0 else dim - 1
+        )
+
+        return Rigid(rots, trans)
+
+    @staticmethod
+    def stack(
+        ts: Sequence[Rigid], 
+        dim: int,
+    ) -> Rigid:
+        rots = Rotation.stack([t._rots for t in ts], dim) 
+        trans = torch.stack(
             [t._trans for t in ts], dim=dim if dim >= 0 else dim - 1
         )
 

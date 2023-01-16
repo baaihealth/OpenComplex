@@ -23,10 +23,10 @@ from typing import Optional, Tuple, Sequence
 
 from opencomplex.model.primitives import Linear, LayerNorm, ipa_point_weights_init_
 from opencomplex.np.residue_constants import (
-    restype_rigid_group_default_frame,
-    restype_atom14_to_rigid_group,
-    restype_atom14_mask,
-    restype_atom14_rigid_group_positions,
+    aatype_rigid_group_default_frame,
+    aatype_atom14_to_rigid_group,
+    aatype_atom14_mask,
+    aatype_atom14_rigid_group_positions,
 )
 from opencomplex.utils.feats import (
     frames_and_literature_positions_to_atom14_pos,
@@ -628,6 +628,7 @@ class StructureModule(nn.Module):
         mask=None,
         inplace_safe=False,
         _offload_inference=False,
+        **kwargs,
     ):
         """
         Args:
@@ -675,6 +676,7 @@ class StructureModule(nn.Module):
             fmt="quat",
         )
         outputs = []
+        frames = []
         for i in range(self.no_blocks):
             # [*, N, C_s]
             s = s + self.ipa(
@@ -725,7 +727,6 @@ class StructureModule(nn.Module):
             scaled_rigids = rigids.scale_translation(self.trans_scale_factor)
             
             preds = {
-                "frames": scaled_rigids.to_tensor_7(),
                 "sidechain_frames": all_frames_to_global.to_tensor_4x4(),
                 "unnormalized_angles": unnormalized_angles,
                 "angles": angles,
@@ -733,6 +734,7 @@ class StructureModule(nn.Module):
             }
 
             outputs.append(preds)
+            frames.append(scaled_rigids)
 
             rigids = rigids.stop_rot_gradient()
 
@@ -745,33 +747,34 @@ class StructureModule(nn.Module):
 
         outputs = dict_multimap(torch.stack, outputs)
         outputs["single"] = s
+        outputs['frames'] = Rigid.stack(frames, dim=-2)
 
         return outputs
 
     def _init_residue_constants(self, float_dtype, device):
         if self.default_frames is None:
             self.default_frames = torch.tensor(
-                restype_rigid_group_default_frame,
+                aatype_rigid_group_default_frame,
                 dtype=float_dtype,
                 device=device,
                 requires_grad=False,
             )
         if self.group_idx is None:
             self.group_idx = torch.tensor(
-                restype_atom14_to_rigid_group,
+                aatype_atom14_to_rigid_group,
                 device=device,
                 requires_grad=False,
             )
         if self.atom_mask is None:
             self.atom_mask = torch.tensor(
-                restype_atom14_mask,
+                aatype_atom14_mask,
                 dtype=float_dtype,
                 device=device,
                 requires_grad=False,
             )
         if self.lit_positions is None:
             self.lit_positions = torch.tensor(
-                restype_atom14_rigid_group_positions,
+                aatype_atom14_rigid_group_positions,
                 dtype=float_dtype,
                 device=device,
                 requires_grad=False,

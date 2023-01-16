@@ -12,16 +12,13 @@ from pytorch_lightning.callbacks.lr_monitor import LearningRateMonitor
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.plugins.training_type import DeepSpeedPlugin, DDPPlugin
-from pytorch_lightning.plugins.environments import SLURMEnvironment
 import torch
 
-from opencomplex.config import model_config
+from opencomplex.config.config import model_config
 from opencomplex.data.data_modules import (
     OpenComplexDataModule,
-    DummyDataLoader,
 )
 from opencomplex.model.model import OpenComplex
-from opencomplex.utils.loss_rna import RNAFoldLoss
 from opencomplex.model.triangular_multiplicative_update import TriangleMultiplicativeUpdate
 from opencomplex.model.torchscript import script_preset_
 from opencomplex.np import residue_constants
@@ -30,17 +27,12 @@ from opencomplex.utils.callbacks import (
     EarlyStoppingVerbose,
 )
 from opencomplex.utils.exponential_moving_average import ExponentialMovingAverage
-from opencomplex.utils.loss import OpenComplexLoss, lddt_ca
+from opencomplex.loss.loss import OpenComplexLoss
 from opencomplex.utils.lr_schedulers import AlphaFoldLRScheduler
-from opencomplex.utils.metric_tool import MetricTool, ValidationMetrics
+from opencomplex.utils import metric_tool
 from opencomplex.utils.seed import seed_everything
-from opencomplex.utils.superimposition import superimpose
 from opencomplex.utils.tensor_utils import tensor_tree_map
-from opencomplex.utils.validation_metrics import (
-    drmsd,
-    gdt_ts,
-    gdt_ha,
-)
+from opencomplex.utils.complex_utils import ComplexType
 from scripts.zero_to_fp32 import (
     get_fp32_state_dict_from_zero_checkpoint,
     get_global_step_from_zero_checkpoint
@@ -51,15 +43,12 @@ from opencomplex.utils.logger import PerformanceLoggingCallback
 # torch.backends.cudnn.allow_tf32 = True
 
 class OpenComplexWrapper(pl.LightningModule):
-    def __init__(self, config, complex_type="protein"):
+    def __init__(self, config, complex_type=ComplexType.PROTEIN):
         super(OpenComplexWrapper, self).__init__()
         self.config = config
         self.complex_type = complex_type
         self.model = OpenComplex(config=config, complex_type=complex_type)
-        if complex_type == "protein":
-            self.loss = OpenComplexLoss(config.loss, config.data.common.feat)
-        else:
-            self.loss = RNAFoldLoss(config.loss)
+        self.loss = OpenComplexLoss(config.loss, config.data.common.feat, complex_type)
             
         self.ema = ExponentialMovingAverage(
             model=self.model, decay=config.ema.decay
@@ -101,9 +90,10 @@ class OpenComplexWrapper(pl.LightningModule):
                 )
 
         with torch.no_grad():
-            other_metrics = self._compute_validation_metrics(
+            other_metrics = metric_tool.compute_validation_metrics(
                 batch, 
                 outputs,
+                complex_type=self.complex_type,
                 superimposition_metrics=(not train)
             )
 
@@ -167,24 +157,6 @@ class OpenComplexWrapper(pl.LightningModule):
         self.model.load_state_dict(self.cached_weights)
         self.cached_weights = None
 
-    def _compute_validation_metrics(self, 
-        batch, 
-        outputs, 
-        superimposition_metrics=False
-    ):
-        if self.complex_type == "protein":
-            return ValidationMetrics.protein_metrics(
-                batch,
-                outputs,
-                superimposition_metrics
-            )
-        else:
-            return ValidationMetrics.RNA_metrics(
-                batch,
-                outputs,
-                superimposition_metrics
-            ) 
-
     def configure_optimizers(self, 
         learning_rate: float = 1e-3,
         # learning_rate: float = 5e-4,
@@ -244,7 +216,7 @@ def main(args):
     if args.debug:
         config.data.data_module.data_loaders.num_workers = 0
         args.wandb = False
-    model_module = OpenComplexWrapper(config, complex_type=args.complex_type)
+    model_module = OpenComplexWrapper(config, complex_type=ComplexType[args.complex_type])
 
     if(args.resume_from_ckpt):
         if(os.path.isdir(args.resume_from_ckpt)):  
@@ -282,13 +254,15 @@ def main(args):
         mc = ModelCheckpoint(
             every_n_epochs=1,
             auto_insert_metric_name=False,
-            save_top_k=-1,
+            save_top_k=10,
+            monitor="val/lddt_ca",
+            mode="max",
         )
         callbacks.append(mc)
 
     if(args.early_stopping):
         es = EarlyStoppingVerbose(
-            monitor="val/lddt_ca" if args.complex_type == "protein" else "val/lddt_O4",
+            monitor="val/lddt_ca",
             min_delta=args.min_delta,
             patience=args.patience,
             verbose=False,
@@ -551,7 +525,7 @@ if __name__ == "__main__":
         )
     )
     parser.add_argument(
-        "--complex_type", type=str, default="protein", choices=["protein", "RNA"],
+        "--complex_type", type=str, default="protein", choices=["protein", "RNA", "mix"],
     )
     parser.add_argument(
         "--_distillation_structure_index_path", type=str, default=None,

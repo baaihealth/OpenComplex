@@ -22,6 +22,7 @@ from importlib import resources
 
 import numpy as np
 import tree
+import torch
 
 # Internal import (35fd).
 
@@ -1121,13 +1122,13 @@ def _make_rigid_transformation_4x4(ex, ey, translation):
 # and an array with (restype, atomtype, coord) for the atom positions
 # and compute affine transformation matrices (4,4) from one rigid group to the
 # previous group
-restype_atom37_to_rigid_group = np.zeros([21, 37], dtype=int)
-restype_atom37_mask = np.zeros([21, 37], dtype=np.float32)
-restype_atom37_rigid_group_positions = np.zeros([21, 37, 3], dtype=np.float32)
-restype_atom14_to_rigid_group = np.zeros([21, 14], dtype=int)
-restype_atom14_mask = np.zeros([21, 14], dtype=np.float32)
-restype_atom14_rigid_group_positions = np.zeros([21, 14, 3], dtype=np.float32)
-restype_rigid_group_default_frame = np.zeros([21, 8, 4, 4], dtype=np.float32)
+aatype_atom37_to_rigid_group = np.zeros([21, 37], dtype=int)
+aatype_atom37_mask = np.zeros([21, 37], dtype=np.float32)
+aatype_atom37_rigid_group_positions = np.zeros([21, 37, 3], dtype=np.float32)
+aatype_atom14_to_rigid_group = np.zeros([21, 14], dtype=int)
+aatype_atom14_mask = np.zeros([21, 14], dtype=np.float32)
+aatype_atom14_rigid_group_positions = np.zeros([21, 14, 3], dtype=np.float32)
+aatype_rigid_group_default_frame = np.zeros([21, 8, 4, 4], dtype=np.float32)
 
 
 def _make_rigid_group_constants():
@@ -1138,16 +1139,16 @@ def _make_rigid_group_constants():
             resname
         ]:
             atomtype = atom_order[atomname]
-            restype_atom37_to_rigid_group[restype, atomtype] = group_idx
-            restype_atom37_mask[restype, atomtype] = 1
-            restype_atom37_rigid_group_positions[
+            aatype_atom37_to_rigid_group[restype, atomtype] = group_idx
+            aatype_atom37_mask[restype, atomtype] = 1
+            aatype_atom37_rigid_group_positions[
                 restype, atomtype, :
             ] = atom_position
 
             atom14idx = restype_name_to_atom14_names[resname].index(atomname)
-            restype_atom14_to_rigid_group[restype, atom14idx] = group_idx
-            restype_atom14_mask[restype, atom14idx] = 1
-            restype_atom14_rigid_group_positions[
+            aatype_atom14_to_rigid_group[restype, atom14idx] = group_idx
+            aatype_atom14_mask[restype, atom14idx] = 1
+            aatype_atom14_rigid_group_positions[
                 restype, atom14idx, :
             ] = atom_position
 
@@ -1159,10 +1160,10 @@ def _make_rigid_group_constants():
         }
 
         # backbone to backbone is the identity transform
-        restype_rigid_group_default_frame[restype, 0, :, :] = np.eye(4)
+        aatype_rigid_group_default_frame[restype, 0, :, :] = np.eye(4)
 
         # pre-omega-frame to backbone (currently dummy identity matrix)
-        restype_rigid_group_default_frame[restype, 1, :, :] = np.eye(4)
+        aatype_rigid_group_default_frame[restype, 1, :, :] = np.eye(4)
 
         # phi-frame to backbone
         mat = _make_rigid_transformation_4x4(
@@ -1170,7 +1171,7 @@ def _make_rigid_group_constants():
             ey=np.array([1.0, 0.0, 0.0]),
             translation=atom_positions["N"],
         )
-        restype_rigid_group_default_frame[restype, 2, :, :] = mat
+        aatype_rigid_group_default_frame[restype, 2, :, :] = mat
 
         # psi-frame to backbone
         mat = _make_rigid_transformation_4x4(
@@ -1178,7 +1179,7 @@ def _make_rigid_group_constants():
             ey=atom_positions["CA"] - atom_positions["N"],
             translation=atom_positions["C"],
         )
-        restype_rigid_group_default_frame[restype, 3, :, :] = mat
+        aatype_rigid_group_default_frame[restype, 3, :, :] = mat
 
         # chi1-frame to backbone
         if chi_angles_mask[restype][0]:
@@ -1191,7 +1192,7 @@ def _make_rigid_group_constants():
                 ey=base_atom_positions[0] - base_atom_positions[1],
                 translation=base_atom_positions[2],
             )
-            restype_rigid_group_default_frame[restype, 4, :, :] = mat
+            aatype_rigid_group_default_frame[restype, 4, :, :] = mat
 
         # chi2-frame to chi1-frame
         # chi3-frame to chi2-frame
@@ -1207,7 +1208,7 @@ def _make_rigid_group_constants():
                     ey=np.array([-1.0, 0.0, 0.0]),
                     translation=axis_end_atom_position,
                 )
-                restype_rigid_group_default_frame[
+                aatype_rigid_group_default_frame[
                     restype, 4 + chi_idx, :, :
                 ] = mat
 
@@ -1303,8 +1304,59 @@ def _make_atom14_ambiguity_feats():
 _make_atom14_ambiguity_feats()
 
 
-def aatype_to_str_sequence(butype):
+def restype_to_str_sequence(butype):
     return ''.join([
         restypes_with_x[butype[i]] 
         for i in range(len(butype))
     ])
+
+
+def get_restype_atom_mapping(device="cpu"):
+    restype_atom14_to_atom37 = []
+    restype_atom37_to_atom14 = []
+    aatype_atom14_masks = []
+
+    for rt in restypes:
+        atom_names = restype_name_to_atom14_names[restype_1to3[rt]]
+        restype_atom14_to_atom37.append(
+            [(atom_order[name] if name else 0) for name in atom_names]
+        )
+        atom_name_to_idx14 = {name: i for i, name in enumerate(atom_names)}
+        restype_atom37_to_atom14.append(
+            [
+                (atom_name_to_idx14[name] if name in atom_name_to_idx14 else 0)
+                for name in atom_types
+            ]
+        )
+
+        aatype_atom14_masks.append(
+            [(1.0 if name else 0.0) for name in atom_names]
+        )
+
+    restype_atom14_to_atom37 = torch.tensor(
+        restype_atom14_to_atom37,
+        dtype=torch.int32,
+        device=device,
+    )
+    restype_atom37_to_atom14 = torch.tensor(
+        restype_atom37_to_atom14,
+        dtype=torch.int32,
+        device=device,
+    )
+    aatype_atom14_masks = torch.tensor(
+        aatype_atom14_masks,
+        dtype=torch.float32,
+        device=device,
+    )
+
+    aatype_atom37_mask = torch.zeros(
+        [20, 37], dtype=torch.float32, device=device
+    )
+    for restype, restype_letter in enumerate(restypes):
+        restype_name = restype_1to3[restype_letter]
+        atom_names = residue_atoms[restype_name]
+        for atom_name in atom_names:
+            atom_type = atom_order[atom_name]
+            aatype_atom37_mask[restype, atom_type] = 1
+
+    return restype_atom14_to_atom37, restype_atom37_to_atom14, aatype_atom14_masks, aatype_atom37_mask

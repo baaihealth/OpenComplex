@@ -20,6 +20,8 @@ from typing import Tuple, List, Callable, Any, Dict, Sequence, Optional
 import torch
 import torch.nn as nn
 
+import numpy as np
+
 
 def add(m1, m2, inplace):
     # The first operation in a checkpoint can't be in-place, but it's
@@ -119,3 +121,57 @@ def tree_map(fn, tree, leaf_type):
 
 
 tensor_tree_map = partial(tree_map, leaf_type=torch.Tensor)
+    
+
+def padcat(tensors, axis=0):
+    tensors = [t for t in tensors if t is not None and t.shape[axis] > 0]
+    if len(tensors) == 1:
+        return tensors[0]
+
+    ndim = tensors[0].ndim
+    if axis < 0:
+        axis += ndim
+
+    axis_max_len = [
+        max(t.shape[i] for t in tensors)
+        for i in range(ndim)
+    ]
+
+    is_np = False
+    if not isinstance(tensors[0], torch.Tensor):
+        if tensors[0].dtype == np.object_:
+            return np.concatenate(tensors, axis=axis)
+
+        is_np = True
+        tensors = [torch.tensor(t) for t in tensors]
+    
+    for i, t in enumerate(tensors):
+        pads = [0 for _ in range(ndim * 2)]
+        for j in range(0, ndim):
+            if j != axis:
+                pads[(ndim - j - 1) * 2 + 1] = axis_max_len[j] - t.shape[j]
+
+        if any(pads):
+            tensors[i] = torch.nn.functional.pad(t, tuple(pads))
+
+    ret = torch.cat(tensors, axis=axis)
+    if is_np:
+        return ret.numpy()
+
+    return ret
+
+
+def map_padcat(a, b, axis=0):
+    for i, j in zip(a, b):
+        yield padcat([i, j], axis)
+
+
+def padto(t, shape):
+    ndim = len(shape)
+    pads = [0 for _ in range(ndim * 2)]
+    for j in range(0, ndim):
+        pads[(ndim - j - 1) * 2 + 1] = shape[j] - t.shape[j]
+    if any(pads):
+        t = torch.nn.functional.pad(t, tuple(pads))
+    return t
+    

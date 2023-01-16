@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from genericpath import exists
 import os
 import datetime
 import copy
@@ -27,6 +28,8 @@ from opencomplex.data import templates, parsers, mmcif_parsing
 from opencomplex.data.tools import jackhmmer, hhblits, hhsearch
 from opencomplex.data.tools.utils import to_date 
 from opencomplex.np import nucleotide_constants, residue_constants, protein
+from opencomplex.utils.complex_utils import ComplexType, determine_chain_type
+from opencomplex.utils.tensor_utils import padcat
 
 
 FeatureDict = Mapping[str, np.ndarray]
@@ -36,6 +39,15 @@ def rename_feats(feats):
     for k in keys:
         if "aatype" in k:
             new_k = k.replace("aatype", "butype")
+            feats[new_k] = feats.pop(k)
+        if "nttype" in k:
+            new_k = k.replace("nttype", "butype")
+            feats[new_k] = feats.pop(k)
+        if "nt_index" in k:
+            new_k = k.replace("nt_index", "residue_index")
+            feats[new_k] = feats.pop(k)
+        if "bu_index" in k:
+            new_k = k.replace("bu_index", "residue_index")
             feats[new_k] = feats.pop(k)
     return feats
 
@@ -122,11 +134,11 @@ def unify_template_features(
 
 
 def make_sequence_features(
-    sequence: str, description: str, num_bu: int, chain_type="protein",
+    sequence: str, description: str, num_bu: int, chain_type=ComplexType.PROTEIN,
 ) -> FeatureDict:
     """Construct a feature dict of sequence features."""
     features = {}
-    constants = residue_constants if chain_type == "protein" else nucleotide_constants
+    constants = residue_constants if chain_type == ComplexType.PROTEIN else nucleotide_constants
     features["butype"] = constants.sequence_to_onehot(
         sequence=sequence,
         mapping=constants.restype_order_with_x,
@@ -145,7 +157,7 @@ def make_sequence_features(
 
 
 def make_mmcif_features(
-    mmcif_object: mmcif_parsing.MmcifObject, chain_id: str, chain_type="protein"
+    mmcif_object: mmcif_parsing.MmcifObject, chain_id: str, chain_type=ComplexType.PROTEIN
 ) -> FeatureDict:
     input_sequence = mmcif_object.chain_to_seqres[chain_id]
     description = "_".join([mmcif_object.file_id, chain_id])
@@ -667,10 +679,21 @@ class DataPipeline:
         feature_dir: str,
     ):
         """Read features from generated pkl file"""
-        with open(os.path.join(feature_dir, "features.pkl"), "rb") as f:
-            features = pickle.load(f)
+        if os.path.exists(os.path.join(feature_dir, "features.pkl")):
+            with open(os.path.join(feature_dir, "features.pkl"), "rb") as f:
+                features = pickle.load(f)
+        elif os.path.exists(os.path.join(feature_dir, "complex_feature.pth")):
+            features = torch.load(os.path.join(feature_dir, "complex_feature.pth"))
+        else:
+            features = torch.load(feature_dir)
         
         features = rename_feats(features)
+        
+        if features["msa"].ndim > 2:
+            features["msa"] = np.argmax(features["msa"], axis=-1)
+        
+        if "deletion_matrix_int" not in features:
+            features["deletion_matrix_int"] = np.zeros_like(features["msa"])
         
         seq_len = features["butype"].shape[0]
         for k in features:
@@ -689,7 +712,7 @@ class DataPipeline:
         feature_dir: str,
         rna_label_dir: Optional[str] = None,
         chain_id: Optional[str] = None,
-        chain_type: str = "protein"
+        complex_type: ComplexType = ComplexType.PROTEIN
     ) -> FeatureDict:
         """
             Assembles features for a specific chain in an mmCIF object.
@@ -697,12 +720,13 @@ class DataPipeline:
             If chain_id is None, it is assumed that there is only one chain
             in the object. Otherwise, a ValueError is thrown.
         """
-        constants = residue_constants if chain_type == "protein" else nucleotide_constants
-        if os.path.isdir(feature_dir):
+        # TODO unify data format
+        if os.path.exists(os.path.join(feature_dir, "features.pkl")):
             with open(os.path.join(feature_dir, "features.pkl"), "rb") as f:
                 features = pickle.load(f)
+        elif os.path.exists(os.path.join(feature_dir, "complex_feature.pth")):
+            features = torch.load(os.path.join(feature_dir, "complex_feature.pth"))
         else:
-            # NOTE(yujingcheng)
             features = torch.load(feature_dir)
 
         features = rename_feats(features)
@@ -728,28 +752,36 @@ class DataPipeline:
                 asym_id = features["asym_id"]
                 unique_asym_id = np.unique(asym_id).tolist()
                 for i in unique_asym_id:
-                    seq = constants.aatype_to_str_sequence(
-                        features['butype'][np.where(features['asym_id'] == i)])
+                    butype = features['butype'][np.where(features['asym_id'] == i)]
+                    bio_id = None
+                    if "bio_id" in features:
+                        bio_id = features['bio_id'][np.where(features['asym_id'] == i)][0]
+
+                    chain_type = determine_chain_type(complex_type, bio_id)
+                    if chain_type == ComplexType.PROTEIN:
+                        seq = residue_constants.restype_to_str_sequence(butype)
+                    else:
+                        seq = nucleotide_constants.restype_to_str_sequence(butype)
 
                     for c in list(chains.keys()):
                         if chains[c] == seq:
-                            chain_id.append(c)
+                            chain_id.append((c, chain_type))
                             del chains[c]
                             break
         if isinstance(chain_id, list):
             mmcif_feats = {}
-            for c in chain_id:
+            for c, chain_type in chain_id:
                 feat = make_mmcif_features(mmcif, c, chain_type=chain_type)
                 for k, v in feat.items():
                     if k not in mmcif_feats:
                         mmcif_feats[k] = v
                     elif v.ndim > 0:
-                        mmcif_feats[k] = np.concatenate((mmcif_feats[k], v), axis=0)
+                        mmcif_feats[k] = padcat([mmcif_feats[k], v])
             delete_keys = ["all_atom_positions", "all_atom_mask", "butype"]
             for k in delete_keys:
                 features.pop(k, None)
         else:
-            mmcif_feats = make_mmcif_features(mmcif, chain_id, chain_type=chain_type)
+            mmcif_feats = make_mmcif_features(mmcif, chain_id, chain_type=complex_type)
 
         seq_len = mmcif_feats["butype"].shape[0]
         for k in features:

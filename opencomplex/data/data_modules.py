@@ -19,6 +19,7 @@ from opencomplex.data import (
     mmcif_parsing,
     templates,
 )
+from opencomplex.utils.complex_utils import ComplexType
 from opencomplex.utils.tensor_utils import tensor_tree_map, dict_multimap
 
 
@@ -37,7 +38,7 @@ class OpenComplexSingleDataset(torch.utils.data.Dataset):
         template_release_dates_cache_path: Optional[str] = None,
         shuffle_top_k_prefiltered: Optional[int] = None,
         treat_pdb_as_distillation: bool = True,
-        complex_type: str = "protein",
+        complex_type: ComplexType = ComplexType.PROTEIN,
         filter_path: Optional[str] = None,
         mode: str = "train", 
         alignment_index: Optional[Any] = None,
@@ -185,7 +186,7 @@ class OpenComplexSingleDataset(torch.utils.data.Dataset):
                 mmcif_string = f.read()
 
             mmcif_object = mmcif_parsing.parse(
-                file_id=file_id, mmcif_string=mmcif_string, chain_type=self.complex_type
+                file_id=file_id, mmcif_string=mmcif_string, complex_type=self.complex_type
             )
 
             # Crash if an error is encountered. Any parsing errors should have
@@ -200,7 +201,7 @@ class OpenComplexSingleDataset(torch.utils.data.Dataset):
             feature_dir=feature_dir,
             rna_label_dir=rna_label_dir,
             chain_id=chain_id,
-            chain_type=self.complex_type,
+            complex_type=self.complex_type,
         )
 
         return data
@@ -224,10 +225,10 @@ class OpenComplexSingleDataset(torch.utils.data.Dataset):
 
         if(self.mode == 'train' or self.mode == 'eval'):
             spl = os.path.splitext(name)[0].rsplit('_', 1)
-            if(len(spl) == 2):
+            if (len(spl) == 2) and self.complex_type != ComplexType.MIX:
                 file_id, chain_id = spl
             else:
-                file_id, = spl
+                file_id = spl[0]
                 chain_id = None
 
             path = os.path.join(self.data_dir, file_id)
@@ -625,7 +626,7 @@ class OpenComplexDataModule(pl.LightningDataModule):
         self.obsolete_pdbs_file_path = obsolete_pdbs_file_path
         self.batch_seed = batch_seed
         self.train_epoch_len = train_epoch_len
-        self.complex_type = complex_type
+        self.complex_type = ComplexType[complex_type]
 
         if(self.train_data_dir is None and self.predict_data_dir is None):
             raise ValueError(
@@ -781,7 +782,10 @@ class OpenComplexDataModule(pl.LightningDataModule):
 
         batch_collator = OpenComplexBatchCollator()
 
-        batch_size = self.config.data_module.data_loaders.batch_size if stage == "train" else 1
+        batch_size = self.config.data_module.data_loaders.batch_size
+        if stage != "train" or self.complex_type == ComplexType.MIX:
+            batch_size = 1
+
         dl = OpenComplexDataLoader(
             dataset,
             config=self.config,

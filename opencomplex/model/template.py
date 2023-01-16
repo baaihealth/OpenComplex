@@ -667,6 +667,7 @@ def embed_templates(model, batch, z, pair_mask, templ_dim, inplace_safe, multich
             inf=model.config.template.inf,
             eps=model.config.template.eps,
             multichain_mask=multichain_mask,
+            c_butype=model.config.c_butype,
             **model.config.template.distogram,
         ).to(z.dtype)
         t = model.template_pair_embedder(t)
@@ -716,6 +717,7 @@ def embed_templates(model, batch, z, pair_mask, templ_dim, inplace_safe, multich
     if model.config.template.embed_angles:
         template_angle_feat = build_template_angle_feat(
             batch,
+            c_butype=model.config.c_butype,
         )
 
         # [*, S_t, N, C_m]

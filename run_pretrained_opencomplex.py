@@ -50,15 +50,12 @@ if(
 torch.set_grad_enabled(False)
 
 from opencomplex.data import templates, feature_pipeline, data_pipeline
-from opencomplex.config import model_config, NUM_RES
+from opencomplex.config.config import model_config
 from opencomplex.model.model import OpenComplex
-from opencomplex.model.torchscript import script_preset_
-from opencomplex.np import residue_constants, protein
+from opencomplex.np import residue_constants, protein, nucleotide_constants, rna, complex
+from opencomplex.utils.complex_utils import ComplexType
 from opencomplex.utils.metric_tool import MetricTool
 import opencomplex.np.relax.relax as relax
-from opencomplex.utils.import_weights import (
-    import_jax_weights_,
-)
 from opencomplex.utils.tensor_utils import (
     tensor_tree_map,
 )
@@ -76,8 +73,11 @@ def get_target_list(args, infer_from_fasta):
     if infer_from_fasta:
         target_list = [target.split('.')[:-1] for target in os.listdir(dir) if target.endswith((".fasta", ".fa"))]
     else:
-        feature_exist = lambda target: os.path.exists(os.path.join(args.features_dir, target, "features.pkl"))
-        target_list = [target for target in os.listdir(args.features_dir) if feature_exist(target)]
+        if args.complex_type == 'protein':
+            feature_exist = lambda target: os.path.exists(os.path.join(args.features_dir, target, "features.pkl"))
+            target_list = [target for target in os.listdir(args.features_dir) if feature_exist(target)]
+        else:
+            target_list = [target for target in os.listdir(args.features_dir)]
 
     if args.target_list_file is not None:
         if os.path.exists(args.target_list_file):
@@ -152,10 +152,16 @@ def prep_output(out, batch, feature_dict, feature_processor, config_preset, args
     plddt = out["plddt"]
     mean_plddt = np.mean(plddt)
     
-    plddt_b_factors = np.repeat(
-        plddt[..., None], residue_constants.atom_type_num, axis=-1
-    )
-
+    if args.complex_type == 'protein':
+        plddt_b_factors = np.repeat(
+            plddt[..., None], residue_constants.atom_type_num, axis=-1
+        )
+    else:
+        # TODO: complex plddt
+        plddt_b_factors = np.repeat(
+            plddt[..., None], nucleotide_constants.atom_type_num, axis=-1
+        )
+    
     if(args.subtract_plddt):
         plddt_b_factors = 100 - plddt_b_factors
 
@@ -198,17 +204,31 @@ def prep_output(out, batch, feature_dict, feature_processor, config_preset, args
 
         batch["residue_index"][i] -= prev_chain_max
 
-    unrelaxed_protein = protein.from_prediction(
-        features=batch,
-        result=out,
-        b_factors=plddt_b_factors,
-        chain_index=chain_index,
-        remark=remark,
-        parents=template_domain_names,
-        parents_chain_index=template_chain_index,
-    )
-
-    return unrelaxed_protein
+    if args.complex_type == 'protein':
+        unrelaxed_structure = protein.from_prediction(
+            features=batch,
+            result=out,
+            b_factors=plddt_b_factors,
+            chain_index=chain_index,
+            remark=remark,
+            parents=template_domain_names,
+            parents_chain_index=template_chain_index,
+        )
+    elif args.complex_type == "RNA":
+        unrelaxed_structure = rna.from_prediction(
+            features=batch,
+            result=out,
+            b_factors=plddt_b_factors
+        )
+    else:
+        unrelaxed_structure = complex.from_prediction(
+            features=batch,
+            result=out,
+            b_factors=plddt_b_factors
+        )
+        
+        
+    return unrelaxed_structure
 
 
 def parse_fasta(data):
@@ -292,7 +312,7 @@ def load_models_from_command_line(args, model_device):
     ret = []
     for config_preset, path in zip(config_presets, param_paths):
         config = model_config(config_preset)
-        model = OpenComplex(config=config, complex_type=args.complex_type)
+        model = OpenComplex(config=config, complex_type=ComplexType[args.complex_type])
         model = model.eval()
 
         feature_processor = feature_pipeline.FeaturePipeline(config.data)
@@ -330,7 +350,7 @@ def load_models_from_command_line(args, model_device):
         model = model.to(model_device)
         ret.append((config_preset, config, model, feature_processor, output_directory))
 
-        if "multimer" in config_preset:
+        if "multimer" in config_preset or "mix" in config_preset:
             mode = "multimer"
 
     return ret, mode
@@ -372,7 +392,10 @@ def main(worker_id, args, infer_from_fasta):
     # Create the output directory
     os.makedirs(args.output_dir, exist_ok=True)
 
-    target_list = get_target_list(args, infer_from_fasta)[worker_id::args.num_workers]
+    if args.target_list_file is not None:
+        target_list = get_target_list(args, infer_from_fasta)[worker_id::args.num_workers]
+    else:
+        target_list = os.listdir(args.features_dir)[worker_id::args.num_workers]
     print('my workid is: %s, my target list is: %s' % (worker_id, target_list))
     
     template_featurizer = alignment_dir = None
@@ -472,14 +495,22 @@ def main(worker_id, args, infer_from_fasta):
 
             # Toss out the recycling dimensions --- we don't need them anymore
             processed_feature_dict = tensor_tree_map(
-                lambda x: np.array(x[..., -1].cpu()), 
+                lambda x: x[..., -1], 
                 processed_feature_dict
             )
+
+            processed_feature_dict = tensor_tree_map(
+                lambda x: np.array(x.cpu()), 
+                processed_feature_dict
+            )
+            for key in ['final_affine_tensor', 'sm', 'geometry_head', 'torsion_head']:
+                if key in out.keys():
+                    del(out[key])
             out = tensor_tree_map(lambda x: np.array(x.cpu()), out)
 
             logger.info("plddt: %.5f", np.mean(out['plddt']))
 
-            unrelaxed_protein = prep_output(
+            unrelaxed_structure = prep_output(
                 out, 
                 processed_feature_dict, 
                 feature_dict, 
@@ -488,8 +519,15 @@ def main(worker_id, args, infer_from_fasta):
                 args
             )
 
+            if args.complex_type == 'protein':
+                pdb_generator = protein.to_pdb
+            elif args.complex_type == 'RNA':
+                pdb_generator = rna.to_pdb
+            else:
+                pdb_generator = complex.to_pdb
+            
             with open(unrelaxed_output_path, 'w') as fp:
-                fp.write(protein.to_pdb(unrelaxed_protein))
+                fp.write(pdb_generator(unrelaxed_structure))
 
             logger.info(f"Output written to {unrelaxed_output_path}...")
             
@@ -507,7 +545,7 @@ def main(worker_id, args, infer_from_fasta):
                     device_no = model_device.split(":")[-1]
                     os.environ["CUDA_VISIBLE_DEVICES"] = device_no
                 try:
-                    relaxed_pdb_str, _, _ = amber_relaxer.process(prot=unrelaxed_protein)
+                    relaxed_pdb_str, _, _ = amber_relaxer.process(prot=unrelaxed_structure)
                     os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
                     relaxation_time = time.perf_counter() - t
 
@@ -535,7 +573,8 @@ def main(worker_id, args, infer_from_fasta):
                 logger.info(f"Model output written to {output_dict_path}...")
 
     if args.native_dir is not None:
-        MetricTool.compute_all_metric(args.native_dir, args.output_dir, mode, target_list)
+        MetricTool.compute_all_metric(args.native_dir, args.output_dir, mode,
+                                      target_list, complex_type=ComplexType[args.complex_type])
 
 def update_timings(dict, output_file=os.path.join(os.getcwd(), "timings.json")):
     """Write dictionary of one or more run step times to a file"""
@@ -643,7 +682,7 @@ if __name__ == "__main__":
         help="Directory to ground truth mmcif fils. If provided, metrics will be computed."
     )
     parser.add_argument(
-        "--complex_type", type=str, default="protein", choices=["protein", "RNA"],
+        "--complex_type", type=str, default="protein", choices=["protein", "RNA", "mix"],
     )
     
     add_data_args(parser)

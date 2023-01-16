@@ -16,7 +16,7 @@ import torch
 import numpy as np
 import unittest
 
-from opencomplex.config import model_config
+from opencomplex.config.config import model_config
 from opencomplex.model.model import AlphaFold
 from opencomplex.utils.import_weights import import_jax_weights_
 

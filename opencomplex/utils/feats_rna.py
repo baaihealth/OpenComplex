@@ -1,17 +1,13 @@
-import os
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from opencomplex.utils.affine_utils import AffineTransformation
-opj=os.path.join
+from opencomplex.utils.rigid_utils import Rigid, Rotation
 from opencomplex.utils.tensor_utils import (
     batched_gather,
 )
-from opencomplex.np import nucleotide_constants as nc
 
 
 def torsion_angles_to_frames(
-    r: AffineTransformation,
+    r: Rigid,
     alpha: torch.Tensor,
     butype: torch.Tensor,
     rrgdf: torch.Tensor,
@@ -48,14 +44,15 @@ def torsion_angles_to_frames(
     # ]
     # This follows the original code rather than the supplement, which uses
     # different indices.
-    all_rots = alpha.new_zeros(default_r.r.shape)
+    all_rots = alpha.new_zeros(default_r.get_rots().get_rot_mats().shape)
     all_rots[..., 0, 0] = 1
     all_rots[..., 1, 1] = alpha[..., 1]
     all_rots[..., 1, 2] = -alpha[..., 0]
     all_rots[..., 2, 1:] = alpha
 
-    all_rots = AffineTransformation(all_rots, None)
-    all_frames = default_r * all_rots
+    all_rots = Rigid(Rotation(rot_mats=all_rots), None)
+
+    all_frames = default_r.compose(all_rots)
     
     delta_frame_to_frame = all_frames[..., 2]
     gamma_frame_to_frame = all_frames[..., 3]
@@ -67,13 +64,13 @@ def torsion_angles_to_frames(
 
     delta_frame_to_bb = delta_frame_to_frame
     gamma_frame_to_bb = gamma_frame_to_frame
-    beta_frame_to_bb = gamma_frame_to_bb * beta_frame_to_frame
-    alpha1_frame_to_bb = beta_frame_to_bb * alpha1_frame_to_frame
-    alpha2_frame_to_bb = beta_frame_to_bb * alpha2_frame_to_frame
+    beta_frame_to_bb = gamma_frame_to_bb.compose(beta_frame_to_frame)
+    alpha1_frame_to_bb = beta_frame_to_bb.compose(alpha1_frame_to_frame)
+    alpha2_frame_to_bb = beta_frame_to_bb.compose(alpha2_frame_to_frame)
     tm_frame_to_bb = tm_frame_to_frame
     chi_frame_to_bb = chi_frame_to_frame
 
-    all_frames_to_bb = AffineTransformation.cat(
+    all_frames_to_bb = Rigid.cat(
         [ 
             all_frames[..., :2],
             delta_frame_to_bb.unsqueeze(-1),
@@ -87,11 +84,11 @@ def torsion_angles_to_frames(
         dim=-1,
     )
     
-    all_frames_to_global1 = r[..., 0, None] * all_frames_to_bb[..., 0:1]
-    all_frames_to_global2 = r[..., 1, None] * all_frames_to_bb[..., 1:2]
-    all_frames_to_global3 = r[..., 0, None] * all_frames_to_bb[..., 2:7]
-    all_frames_to_global4 = r[..., 1, None] * all_frames_to_bb[..., 7:9]
-    all_frames_to_global = AffineTransformation.cat(
+    all_frames_to_global1 = r[..., 0, None].compose(all_frames_to_bb[..., 0:1])
+    all_frames_to_global2 = r[..., 1, None].compose(all_frames_to_bb[..., 1:2])
+    all_frames_to_global3 = r[..., 0, None].compose(all_frames_to_bb[..., 2:7])
+    all_frames_to_global4 = r[..., 1, None].compose(all_frames_to_bb[..., 7:9])
+    all_frames_to_global = Rigid.cat(
         [
             all_frames_to_global1, 
             all_frames_to_global2,
@@ -104,7 +101,7 @@ def torsion_angles_to_frames(
 
 
 def frames_and_literature_positions_to_atom23_pos(
-    r: AffineTransformation,
+    r: Rigid,
     butype: torch.Tensor,
     default_frames,
     group_idx,
@@ -133,7 +130,7 @@ def frames_and_literature_positions_to_atom23_pos(
 
     # [*, N, 23, 3]
     lit_positions = lit_positions[butype, ...]
-    pred_positions = AffineTransformation.apply_affine(t_atoms_to_global, lit_positions)
+    pred_positions = t_atoms_to_global.apply(lit_positions)
     pred_positions = pred_positions * atom_mask
 
     return pred_positions

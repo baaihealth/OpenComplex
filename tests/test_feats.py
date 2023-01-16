@@ -18,10 +18,10 @@ import unittest
 
 import opencomplex.data.data_transforms as data_transforms
 from opencomplex.np.residue_constants import (
-    restype_rigid_group_default_frame,
-    restype_atom14_to_rigid_group,
-    restype_atom14_mask,
-    restype_atom14_rigid_group_positions,
+    aatype_rigid_group_default_frame,
+    aatype_atom14_to_rigid_group,
+    aatype_atom14_mask,
+    aatype_atom14_rigid_group_positions,
 )
 import opencomplex.utils.feats as feats
 from opencomplex.utils.rigid_utils import Rotation, Rigid
@@ -198,7 +198,7 @@ class TestFeats(unittest.TestCase):
             ts,
             angles,
             aas,
-            torch.tensor(restype_rigid_group_default_frame),
+            torch.tensor(aatype_rigid_group_default_frame),
         )
 
         self.assertTrue(frames.shape == (batch_size, n, 8))
@@ -236,7 +236,7 @@ class TestFeats(unittest.TestCase):
             transformations.cuda(),
             torch.as_tensor(torsion_angles_sin_cos).cuda(),
             torch.as_tensor(butype).cuda(),
-            torch.tensor(restype_rigid_group_default_frame).cuda(),
+            torch.tensor(aatype_rigid_group_default_frame).cuda(),
         )
 
         # Convert the Rigids to 4x4 transformation tensors
@@ -271,10 +271,10 @@ class TestFeats(unittest.TestCase):
         xyz = feats.frames_and_literature_positions_to_atom14_pos(
             ts,
             f,
-            torch.tensor(restype_rigid_group_default_frame),
-            torch.tensor(restype_atom14_to_rigid_group),
-            torch.tensor(restype_atom14_mask),
-            torch.tensor(restype_atom14_rigid_group_positions),
+            torch.tensor(aatype_rigid_group_default_frame),
+            torch.tensor(aatype_atom14_to_rigid_group),
+            torch.tensor(aatype_atom14_mask),
+            torch.tensor(aatype_atom14_rigid_group_positions),
         )
 
         self.assertTrue(xyz.shape == (batch_size, n_res, 14, 3))
@@ -308,10 +308,10 @@ class TestFeats(unittest.TestCase):
         out_repro = feats.frames_and_literature_positions_to_atom14_pos(
             transformations.cuda(),
             torch.as_tensor(butype).cuda(),
-            torch.tensor(restype_rigid_group_default_frame).cuda(),
-            torch.tensor(restype_atom14_to_rigid_group).cuda(),
-            torch.tensor(restype_atom14_mask).cuda(),
-            torch.tensor(restype_atom14_rigid_group_positions).cuda(),
+            torch.tensor(aatype_rigid_group_default_frame).cuda(),
+            torch.tensor(aatype_atom14_to_rigid_group).cuda(),
+            torch.tensor(aatype_atom14_mask).cuda(),
+            torch.tensor(aatype_atom14_rigid_group_positions).cuda(),
         ).cpu()
 
         self.assertTrue(torch.max(torch.abs(out_gt - out_repro) < consts.eps))

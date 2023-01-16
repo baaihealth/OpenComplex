@@ -18,11 +18,11 @@ import unittest
 
 from opencomplex.data.data_transforms import make_atom14_masks_np
 from opencomplex.np.residue_constants import (
-    restype_rigid_group_default_frame,
-    restype_atom14_to_rigid_group,
-    restype_atom14_mask,
-    restype_atom14_rigid_group_positions,
-    restype_atom37_mask,
+    aatype_rigid_group_default_frame,
+    aatype_atom14_to_rigid_group,
+    aatype_atom14_mask,
+    aatype_atom14_rigid_group_positions,
+    aatype_atom37_mask,
 )
 from opencomplex.model.structure_module import (
     StructureModule,
@@ -143,11 +143,11 @@ class TestStructureModule(unittest.TestCase):
         }
 
         batch["atom14_atom_exists"] = np.take(
-            restype_atom14_mask, batch["butype"], axis=0
+            aatype_atom14_mask, batch["butype"], axis=0
         )
 
         batch["atom37_atom_exists"] = np.take(
-            restype_atom37_mask, batch["butype"], axis=0
+            aatype_atom37_mask, batch["butype"], axis=0
         )
 
         batch.update(make_atom14_masks_np(batch))

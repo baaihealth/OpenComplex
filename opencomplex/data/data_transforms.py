@@ -21,15 +21,17 @@ from site import ENABLE_USER_SITE
 import numpy as np
 import torch
 
-from opencomplex.config import NUM_RES, NUM_EXTRA_SEQ, NUM_TEMPLATES, NUM_MSA_SEQ
+from opencomplex.config.references import NUM_FULL_RES, NUM_RES, NUM_EXTRA_SEQ, NUM_TEMPLATES, NUM_MSA_SEQ
 from opencomplex.np import residue_constants as rc
 from opencomplex.np import nucleotide_constants as nc
 from opencomplex.utils.rigid_utils import Rotation, Rigid
 from opencomplex.utils.tensor_utils import (
-    tree_map,
-    tensor_tree_map,
+    map_padcat,
+    padcat,
+    padto,
     batched_gather,
 )
+from opencomplex.utils.complex_utils import ComplexType, correct_rna_butype, split_protein_rna_pos
 
 
 MSA_FEATURE_NAMES = [
@@ -49,12 +51,28 @@ def curry1(f):
 
     return fc
 
+def fix_data_type(bio_complex):
+    keys = ["msa", "num_alignments", "num_alignments", "bio_id"]
+    for k, v in bio_complex.items():
+        if k in keys and v.dtype != torch.int64:
+            bio_complex[k] = v.type(torch.int64)
+    return bio_complex
+
 
 def cast_to_64bit_ints(bio_complex):
     # We keep all ints as int64
     for k, v in bio_complex.items():
         if v.dtype == torch.int32:
             bio_complex[k] = v.type(torch.int64)
+
+    return bio_complex
+
+
+def cast_to_32bit_floats(bio_complex):
+    # We keep all floats at most float32
+    for k, v in bio_complex.items():
+        if v.dtype == torch.float64:
+            bio_complex[k] = v.type(torch.float32)
 
     return bio_complex
 
@@ -66,12 +84,54 @@ def make_one_hot(x, num_classes):
 
 
 @curry1
-def make_seq_mask(bio_complex, unknown_type=-1):
+def reorder_chains(bio_complex, shape_schema):
+    """Make protein chains ahead of rna chains in complex multimer."""
+    if 'bio_id' in bio_complex:
+        _, indices = torch.sort(bio_complex['bio_id'], stable=True)
+        for k in bio_complex:
+            if k not in shape_schema:
+                continue
+            for i, dim_size in enumerate(shape_schema[k]):
+                if dim_size == NUM_RES or dim_size == NUM_FULL_RES:
+                    bio_complex[k] = torch.index_select(bio_complex[k], i, indices)
+    return bio_complex
+
+@curry1
+def split_pos(bio_complex, complex_type):
+    bio_complex["protein_pos"], bio_complex["rna_pos"] = split_protein_rna_pos(bio_complex, complex_type)
+    return bio_complex
+
+
+def map_butype(bio_complex):
+    if "bio_id" in bio_complex:
+        def map_token(t):
+            for fr, to in [(20, 24), (21, 25)]:
+                t[torch.where(t == fr)] = to
+            return t
+
+        butype_offset = 20
+        rna_pos = bio_complex["rna_pos"]
+        # 0~19 aa, 20~23 nt, 24 unkown, 25 gap
+        bio_complex["butype"] = map_token(bio_complex["butype"])
+        bio_complex['butype'][rna_pos] += butype_offset
+
+        if "template_butype" in bio_complex:
+            bio_complex["template_butype"] = map_token(bio_complex["template_butype"])
+            bio_complex['template_butype'][..., rna_pos] += butype_offset
+
+        bio_complex["msa"] = map_token(bio_complex["msa"])
+        bio_complex['msa'][:, rna_pos] += butype_offset
+
+    return bio_complex
+
+
+def make_seq_mask(bio_complex):
     bio_complex["seq_mask"] = torch.ones(
         bio_complex["butype"].shape, dtype=torch.float32
     )
-    if unknown_type != -1:
-        bio_complex["seq_mask"][torch.where(bio_complex["butype"] == unknown_type)] = 0.
+
+    # unknown type X
+    bio_complex["seq_mask"][torch.where(bio_complex["butype"] == bio_complex["num_butype"])] = 0.
 
     return bio_complex
 
@@ -88,8 +148,12 @@ def make_all_atom_butype(bio_complex):
     return bio_complex
 
 
-def fix_templates_butype(bio_complex):
+@curry1
+def fix_templates_butype(bio_complex, complex_type):
     # Map one-hot to indices
+    if complex_type == ComplexType.RNA:
+        return bio_complex
+
     num_templates = bio_complex["template_butype"].shape[0]
     if(num_templates > 0):
         # NOTE: data format compatibility
@@ -101,6 +165,9 @@ def fix_templates_butype(bio_complex):
         )
         # Map hhsearch-butype to our butype.
         new_order_list = rc.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE
+        if complex_type == ComplexType.MIX:
+            # NOTE(yujingcheng): magic number
+            new_order_list = tuple(list(new_order_list) + list(range(22, 26)))
         new_order = torch.tensor(
             new_order_list, dtype=torch.int64, device=bio_complex["butype"].device,
         ).expand(num_templates, -1)
@@ -114,18 +181,22 @@ def fix_templates_butype(bio_complex):
 @curry1
 def correct_msa_restypes(bio_complex, complex_type):
     """Correct MSA restype to have the same order as rc."""
-    if complex_type != "protein":
+    if complex_type == ComplexType.RNA:
         return bio_complex
-        
+
     new_order_list = rc.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE
+    if complex_type == ComplexType.MIX:
+        # NOTE(yujingcheng): magic number
+        new_order_list = tuple(list(new_order_list) + list(range(22, 26)))
     new_order = torch.tensor(
-        [new_order_list] * bio_complex["msa"].shape[1], 
+        [new_order_list] * bio_complex["msa"].shape[1],
         device=bio_complex["msa"].device,
     ).transpose(0, 1)
     bio_complex["msa"] = torch.gather(new_order, 0, bio_complex["msa"])
 
-    perm_matrix = np.zeros((22, 22), dtype=np.float32)
-    perm_matrix[range(len(new_order_list)), new_order_list] = 1.0
+    l = len(new_order_list)
+    perm_matrix = np.zeros((l, l), dtype=np.float32)
+    perm_matrix[range(l), new_order_list] = 1.0
 
     for k in bio_complex:
         if "profile" in k:
@@ -145,6 +216,8 @@ def squeeze_features(bio_complex):
     if bio_complex["butype"].ndim == 2:
         # NOTE: data format capability
         bio_complex["butype"] = torch.argmax(bio_complex["butype"], dim=-1)
+    if "template_butype" in bio_complex and bio_complex["template_butype"].ndim > 2:
+            bio_complex["template_butype"] = torch.argmax(bio_complex["template_butype"], dim=-1)
     for k in [
         "domain_name",
         "msa",
@@ -174,10 +247,10 @@ def squeeze_features(bio_complex):
 
 
 @curry1
-def randomly_replace_msa_with_unknown(bio_complex, c_butype, replace_proportion):
+def randomly_replace_msa_with_unknown(bio_complex, replace_proportion):
     """Replace a portion of the MSA with 'X'."""
     msa_mask = torch.rand(bio_complex["msa"].shape) < replace_proportion
-    x_idx = c_butype
+    x_idx = bio_complex["num_butype"]
     gap_idx = x_idx + 1
     msa_mask = torch.logical_and(msa_mask, bio_complex["msa"] != gap_idx)
     bio_complex["msa"] = torch.where(
@@ -215,13 +288,24 @@ def sample_msa(bio_complex, max_seq, keep_extra, seed=None):
         index_order, [num_sel, num_seq - num_sel]
     )
 
+    # NOTE: fix data bug
+    if bio_complex['deletion_matrix'].shape != bio_complex['msa'].shape:
+        bio_complex['deletion_matrix'] = padto(bio_complex['deletion_matrix'], bio_complex['msa'].shape)
+
+    # TODO: RNA MSA sample?
+    rna_pos = bio_complex["rna_pos"]
     for k in MSA_FEATURE_NAMES:
         if k in bio_complex:
             if keep_extra:
                 bio_complex["extra_" + k] = torch.index_select(
                     bio_complex[k], 0, not_sel_seq
                 )
+            if len(rna_pos) > 0 and k != "msa_row_mask":
+                rna_bak = bio_complex[k][:num_sel, rna_pos]
             bio_complex[k] = torch.index_select(bio_complex[k], 0, sel_seq)
+            if len(rna_pos) > 0 and k != "msa_row_mask":
+                rna_bak = bio_complex[k][:num_sel, rna_pos]
+                bio_complex[k][:num_sel, rna_pos] = rna_bak
 
     return bio_complex
 
@@ -296,9 +380,10 @@ def block_delete_msa(bio_complex, config):
 
 @curry1
 def nearest_neighbor_clusters(bio_complex, gap_agreement_weight=0.0):
+    num_butype = bio_complex["num_butype"]
     weights = torch.cat(
         [
-            torch.ones(21, device=bio_complex["msa"].device), 
+            torch.ones(num_butype + 1, device=bio_complex["msa"].device), 
             gap_agreement_weight * torch.ones(1, device=bio_complex["msa"].device),
             torch.zeros(1, device=bio_complex["msa"].device)
         ],
@@ -306,9 +391,9 @@ def nearest_neighbor_clusters(bio_complex, gap_agreement_weight=0.0):
     )
 
     # Make agreement score as weighted Hamming distance
-    msa_one_hot = make_one_hot(bio_complex["msa"], 23)
+    msa_one_hot = make_one_hot(bio_complex["msa"], num_butype + 3)
     sample_one_hot = bio_complex["msa_mask"][:, :, None] * msa_one_hot
-    extra_msa_one_hot = make_one_hot(bio_complex["extra_msa"], 23)
+    extra_msa_one_hot = make_one_hot(bio_complex["extra_msa"], num_butype + 3)
     extra_one_hot = bio_complex["extra_msa_mask"][:, :, None] * extra_msa_one_hot
 
     num_seq, num_res, _ = sample_one_hot.shape
@@ -317,9 +402,9 @@ def nearest_neighbor_clusters(bio_complex, gap_agreement_weight=0.0):
     # Compute tf.einsum('mrc,nrc,c->mn', sample_one_hot, extra_one_hot, weights)
     # in an optimized fashion to avoid possible memory or computation blowup.
     agreement = torch.matmul(
-        torch.reshape(extra_one_hot, [extra_num_seq, num_res * 23]),
+        torch.reshape(extra_one_hot, [extra_num_seq, num_res * (num_butype + 3)]),
         torch.reshape(
-            sample_one_hot * weights, [num_seq, num_res * 23]
+            sample_one_hot * weights, [num_seq, num_res * (num_butype + 3)]
         ).transpose(0, 1),
     )
 
@@ -358,10 +443,10 @@ def unsorted_segment_sum(data, segment_ids, num_segments):
     return tensor
 
 
-@curry1
 def summarize_clusters(bio_complex):
     """Produce profile and deletion_matrix_mean within each cluster."""
     num_seq = bio_complex["msa"].shape[0]
+    num_butype = bio_complex["num_butype"]
 
     def csum(x):
         return unsorted_segment_sum(
@@ -371,8 +456,8 @@ def summarize_clusters(bio_complex):
     mask = bio_complex["extra_msa_mask"]
     mask_counts = 1e-6 + bio_complex["msa_mask"] + csum(mask)  # Include center
 
-    msa_sum = csum(mask[:, :, None] * make_one_hot(bio_complex["extra_msa"], 23))
-    msa_sum += make_one_hot(bio_complex["msa"], 23)  # Original sequence
+    msa_sum = csum(mask[:, :, None] * make_one_hot(bio_complex["extra_msa"], num_butype + 3))
+    msa_sum += make_one_hot(bio_complex["msa"], num_butype + 3)  # Original sequence
     bio_complex["cluster_profile"] = msa_sum / mask_counts[:, :, None]
     del msa_sum
 
@@ -393,50 +478,55 @@ def make_msa_mask(bio_complex):
     return bio_complex
 
 
-def pseudo_beta_fn(butype, all_atom_positions, all_atom_mask, complex_type):
+def pseudo_beta_fn(bio_complex, butype, all_atom_positions, all_atom_mask, complex_type=None):
     """Create pseudo beta features."""
-    if complex_type == "protein":
-        is_gly = torch.eq(butype, rc.restype_order["G"])
-        ca_idx = rc.atom_order["CA"]
-        cb_idx = rc.atom_order["CB"]
-        pseudo_beta = torch.where(
-            torch.tile(is_gly[..., None], [1] * len(is_gly.shape) + [3]),
-            all_atom_positions[..., ca_idx, :],
-            all_atom_positions[..., cb_idx, :],
-        )
-
-        if all_atom_mask is not None:
-            pseudo_beta_mask = torch.where(
-                is_gly, all_atom_mask[..., ca_idx], all_atom_mask[..., cb_idx]
-            )
-            return pseudo_beta, pseudo_beta_mask
-        else:
-            return pseudo_beta
+    if "protein_pos" in bio_complex:
+        protein_pos, rna_pos = bio_complex["protein_pos"], bio_complex["rna_pos"]
     else:
-        o4_idx = nc.atom_order["O4'"]
-        
-        pseudo_beta = all_atom_positions[..., o4_idx, :]
-        
-        if all_atom_mask is not None:
-            pseudo_beta_mask = all_atom_mask[..., o4_idx]
-            
-            return pseudo_beta, pseudo_beta_mask
-        else:
-            return pseudo_beta
+        protein_pos, rna_pos = split_protein_rna_pos(bio_complex, complex_type)
+    is_gly = torch.eq(butype, rc.restype_order["G"])
+    ca_idx = rc.atom_order["CA"]
+    cb_idx = rc.atom_order["CB"]
+    o4_idx = nc.atom_order["O4'"]
+    pseudo_beta = padcat(
+        [
+            torch.where(
+                torch.tile(is_gly[..., None], [1] * len(is_gly.shape) + [3]),
+                all_atom_positions[..., ca_idx, :],
+                all_atom_positions[..., cb_idx, :],
+            )[..., protein_pos, :],
+            all_atom_positions[..., rna_pos, o4_idx, :]
+        ],
+        axis=-2
+    )
+
+    if all_atom_mask is not None:
+        pseudo_beta_mask = padcat(
+            [
+                torch.where(
+                    is_gly, all_atom_mask[..., ca_idx], all_atom_mask[..., cb_idx]
+                )[..., protein_pos],
+                all_atom_mask[..., rna_pos, o4_idx],
+            ],
+            axis=-1
+        )
+        return pseudo_beta, pseudo_beta_mask
+    else:
+        return pseudo_beta
 
 
 @curry1
-def make_pseudo_beta(bio_complex, complex_type, prefix=""):
+def make_pseudo_beta(bio_complex, prefix=""):
     """Create pseudo-beta (alpha for glycine) position and mask."""
     assert prefix in ["", "template_"]
     (
         bio_complex[prefix + "pseudo_beta"],
         bio_complex[prefix + "pseudo_beta_mask"],
     ) = pseudo_beta_fn(
+        bio_complex,
         bio_complex[prefix + "butype"],
         bio_complex[prefix + "all_atom_positions"],
         bio_complex[prefix + "all_atom_mask"],
-        complex_type=complex_type
     )
     return bio_complex
 
@@ -457,25 +547,25 @@ def shaped_categorical(probs, epsilon=1e-10):
     return torch.reshape(counts, ds[:-1])
 
 
-@curry1
-def make_hhblits_profile(bio_complex, c_butype):
+def make_hhblits_profile(bio_complex):
     """Compute the HHblits MSA profile if not already present."""
     if "hhblits_profile" in bio_complex:
         return bio_complex
 
     # Compute the profile for every residue (over all MSA sequences).
-    msa_one_hot = make_one_hot(bio_complex["msa"], c_butype + 2) # 22, 6
+    msa_one_hot = make_one_hot(bio_complex["msa"], bio_complex["num_butype"] + 2) # 22, 6, 26
 
     bio_complex["hhblits_profile"] = torch.mean(msa_one_hot, dim=0)
     return bio_complex
 
 
 @curry1
-def make_masked_msa(bio_complex, config, replace_fraction, c_butype):
+def make_masked_msa(bio_complex, config, replace_fraction):
     """Create data for BERT on raw MSA."""
     # Add a random amino acid uniformly.
+    num_butype = bio_complex["num_butype"]
     random_bu = torch.tensor(
-        [0.05] * c_butype + [0.0, 0.0],
+        [0.05] * num_butype + [0.0, 0.0],
         dtype=torch.float32,
         device=bio_complex["butype"].device
     )
@@ -483,7 +573,7 @@ def make_masked_msa(bio_complex, config, replace_fraction, c_butype):
     categorical_probs = (
         config.uniform_prob * random_bu
         + config.profile_prob * bio_complex["hhblits_profile"]
-        + config.same_prob * make_one_hot(bio_complex["msa"], c_butype + 2)
+        + config.same_prob * make_one_hot(bio_complex["msa"], num_butype + 2)
     )
 
     # Put all remaining probability on [MASK] which is a new column
@@ -530,6 +620,8 @@ def make_fixed_size(
         NUM_EXTRA_SEQ: extra_msa_size,
         NUM_TEMPLATES: num_templates,
     }
+    if "origin_asym_id" in bio_complex:
+        pad_size_map[NUM_FULL_RES] = max(bio_complex["origin_asym_id"].shape[0], num_res)
 
     for k, v in bio_complex.items():
         # Don't transfer this to the accelerator.
@@ -553,12 +645,12 @@ def make_fixed_size(
     return bio_complex
 
 
-@curry1
-def make_msa_feat(bio_complex, c_butype):
+def make_msa_feat(bio_complex):
     """Create and concatenate MSA features."""
     # Whether there is a domain break. Always zero for chains, but keeping for
     # compatibility with domain datasets.
-    butype_1hot = make_one_hot(bio_complex["butype"], c_butype + 1)
+    num_butype = bio_complex["num_butype"]
+    butype_1hot = make_one_hot(bio_complex["butype"], num_butype + 1)
     if "between_segment_residues" in bio_complex:
         has_break = torch.clip(
             bio_complex["between_segment_residues"].to(torch.float32), 0, 1
@@ -575,7 +667,7 @@ def make_msa_feat(bio_complex, c_butype):
             butype_1hot,  # Everyone gets the original sequence.
         ]
 
-    msa_1hot = make_one_hot(bio_complex["msa"], c_butype + 3)
+    msa_1hot = make_one_hot(bio_complex["msa"], num_butype + 3)
     has_deletion = torch.clip(bio_complex["deletion_matrix"], 0.0, 1.0)
     deletion_value = torch.atan(bio_complex["deletion_matrix"] / 3.0) * (
         2.0 / np.pi
@@ -623,312 +715,83 @@ def crop_templates(bio_complex, max_templates):
             bio_complex[k] = v[:max_templates]
     return bio_complex
 
-def make_atom23_masks(bio_complex):
-    """Construct denser atom positions (23 dimensions instead of 27)."""
-    restype_atom23_to_atom27 = []
-    restype_atom27_to_atom23 = []
-    restype_atom23_mask = []
-
-    for rt in nc.restypes:
-        atom_names = nc.restype_name_to_atom23_names[rt]
-        restype_atom23_to_atom27.append(
-            [(nc.atom_order[name] if name else 0) for name in atom_names]
-        )
-        atom_name_to_idx23 = {name: i for i, name in enumerate(atom_names)}
-        restype_atom27_to_atom23.append(
-            [
-                (atom_name_to_idx23[name] if name in atom_name_to_idx23 else 0)
-                for name in nc.atom_types
-            ]
-        )
-
-        restype_atom23_mask.append(
-            [(1.0 if name else 0.0) for name in atom_names]
-        )
-
-    # Add dummy mapping for restype 'UNK'
-    restype_atom23_to_atom27.append([0] * 23)
-    restype_atom27_to_atom23.append([0] * 27)
-    restype_atom23_mask.append([0.0] * 23)
-
-    restype_atom23_to_atom27 = torch.tensor(
-        restype_atom23_to_atom27,
-        dtype=torch.int32,
-        device=bio_complex["butype"].device,
-    )
-    restype_atom27_to_atom23 = torch.tensor(
-        restype_atom27_to_atom23,
-        dtype=torch.int32,
-        device=bio_complex["butype"].device,
-    )
-    restype_atom23_mask = torch.tensor(
-        restype_atom23_mask,
-        dtype=torch.float32,
-        device=bio_complex["butype"].device,
-    )
-    rna_butype = bio_complex['butype'].to(torch.long)
-
-    # create the mapping for (residx, atom23) --> atom27, i.e. an array
-    # with shape (num_res, 23) containing the atom27 indices for this bio_complex
-    residx_atom23_to_atom27 = restype_atom23_to_atom27[rna_butype]
-    residx_atom23_mask = restype_atom23_mask[rna_butype]
-
-    bio_complex["atom23_atom_exists"] = residx_atom23_mask
-    bio_complex["residx_atom23_to_atom27"] = residx_atom23_to_atom27.long()
-
-    # create the gather indices for mapping back
-    residx_atom27_to_atom23 = restype_atom27_to_atom23[rna_butype]
-    bio_complex["residx_atom27_to_atom23"] = residx_atom27_to_atom23.long()
-
-    # create the corresponding mask
-    restype_atom27_mask = torch.zeros(
-        [5, 27], dtype=torch.float32, device=bio_complex["butype"].device
-    )
-    for restype, restype_letter in enumerate(nc.restypes):
-        restype_name = restype_letter
-        atom_names = nc.residue_atoms[restype_name]
-        for atom_name in atom_names:
-            atom_type = nc.atom_order[atom_name]
-            restype_atom27_mask[restype, atom_type] = 1
-
-    residx_atom27_mask = restype_atom27_mask[rna_butype]
-    bio_complex["atom27_atom_exists"] = residx_atom27_mask
-
-    return bio_complex
-
-
-def make_atom14_masks(bio_complex):
-    """Construct denser atom positions (14 dimensions instead of 37)."""
-    restype_atom14_to_atom37 = []
-    restype_atom37_to_atom14 = []
-    restype_atom14_mask = []
-
-    for rt in rc.restypes:
-        atom_names = rc.restype_name_to_atom14_names[rc.restype_1to3[rt]]
-        restype_atom14_to_atom37.append(
-            [(rc.atom_order[name] if name else 0) for name in atom_names]
-        )
-        atom_name_to_idx14 = {name: i for i, name in enumerate(atom_names)}
-        restype_atom37_to_atom14.append(
-            [
-                (atom_name_to_idx14[name] if name in atom_name_to_idx14 else 0)
-                for name in rc.atom_types
-            ]
-        )
-
-        restype_atom14_mask.append(
-            [(1.0 if name else 0.0) for name in atom_names]
-        )
-
-    # Add dummy mapping for restype 'UNK'
-    restype_atom14_to_atom37.append([0] * 14)
-    restype_atom37_to_atom14.append([0] * 37)
-    restype_atom14_mask.append([0.0] * 14)
-
-    restype_atom14_to_atom37 = torch.tensor(
-        restype_atom14_to_atom37,
-        dtype=torch.int32,
-        device=bio_complex["butype"].device,
-    )
-    restype_atom37_to_atom14 = torch.tensor(
-        restype_atom37_to_atom14,
-        dtype=torch.int32,
-        device=bio_complex["butype"].device,
-    )
-    restype_atom14_mask = torch.tensor(
-        restype_atom14_mask,
-        dtype=torch.float32,
-        device=bio_complex["butype"].device,
-    )
-    protein_butype = bio_complex['butype'].to(torch.long)
-
-    # create the mapping for (residx, atom14) --> atom37, i.e. an array
-    # with shape (num_res, 14) containing the atom37 indices for this bio_complex
-    residx_atom14_to_atom37 = restype_atom14_to_atom37[protein_butype]
-    residx_atom14_mask = restype_atom14_mask[protein_butype]
-
-    bio_complex["atom14_atom_exists"] = residx_atom14_mask
-    bio_complex["residx_atom14_to_atom37"] = residx_atom14_to_atom37.long()
-
-    # create the gather indices for mapping back
-    residx_atom37_to_atom14 = restype_atom37_to_atom14[protein_butype]
-    bio_complex["residx_atom37_to_atom14"] = residx_atom37_to_atom14.long()
-
-    # create the corresponding mask
-    restype_atom37_mask = torch.zeros(
-        [21, 37], dtype=torch.float32, device=bio_complex["butype"].device
-    )
-    for restype, restype_letter in enumerate(rc.restypes):
-        restype_name = rc.restype_1to3[restype_letter]
-        atom_names = rc.residue_atoms[restype_name]
-        for atom_name in atom_names:
-            atom_type = rc.atom_order[atom_name]
-            restype_atom37_mask[restype, atom_type] = 1
-
-    residx_atom37_mask = restype_atom37_mask[protein_butype]
-    bio_complex["atom37_atom_exists"] = residx_atom37_mask
-
-    return bio_complex
 
 @curry1
 def make_dense_atom_masks(bio_complex, complex_type):
-    if complex_type == "protein":
-        return make_atom14_masks(bio_complex)
+    device = bio_complex['butype'].device
+
+    protein_map = rc.get_restype_atom_mapping(device)
+    rna_map = nc.get_restype_atom_mapping(device)
+    if complex_type == ComplexType.PROTEIN:
+        mapping = protein_map
+    elif complex_type == ComplexType.RNA:
+        mapping = rna_map
     else:
-        return make_atom23_masks(bio_complex)
+        mapping = map_padcat(protein_map, rna_map)
 
-
-def make_atom14_masks_np(batch):
-    batch = tree_map(
-        lambda n: torch.tensor(n, device=batch["butype"].device), 
-        batch, 
-        np.ndarray
-    )
-    out = make_atom14_masks(batch)
-    out = tensor_tree_map(lambda t: np.array(t), out)
-    return out
-
-def make_atom23_masks_np(batch):
-    batch = tree_map(
-        lambda n: torch.tensor(n, device=batch["butype"].device), 
-        batch, 
-        np.ndarray
-    )
-    out = make_atom23_masks(batch)
-    out = tensor_tree_map(lambda t: np.array(t), out)
-    return out
-
-def atom27_to_frames(bio_complex, eps=1e-8):
-    butype = bio_complex["butype"]
-    all_atom_positions = bio_complex["all_atom_positions"]
-    all_atom_mask = bio_complex["all_atom_mask"]
+    # Add mapping for unknown type
+    padding = partial(torch.nn.functional.pad, pad=(0, 0, 0, 1))
+    (
+        restype_dense_to_all,
+        restype_all_to_dense,
+        restype_dense_mask,
+        restype_all_mask,
+    ) = map(padding, mapping)
     
-    batch_dims = len(butype.shape[:-1])
-    # 5 NT types (AUGC plus X), 9 groups
-    nttype_rigidgroup_base_atom_names = np.full([5, 9, 3], "", dtype=object)
-    # atoms that constitute backbone frame 1
-    nttype_rigidgroup_base_atom_names[:, 0, :] = ["O4'", "C4'", "C3'"]
-    nttype_rigidgroup_base_atom_names[:, 1, :] = ["O4'", "C1'", "C2'"]
+    butype = bio_complex['butype'].to(torch.long)
 
-    for restype, restype_letter in enumerate(nc.restypes):
-        # keep one-letter format in RNA
-        resname = restype_letter
-        for torsion_idx in range(7):
-            if nc.chi_angles_mask[restype][torsion_idx]:
-                names = nc.chi_angles_atoms[resname][torsion_idx]
-                nttype_rigidgroup_base_atom_names[
-                    restype, torsion_idx + 2, :
-                ] = names[1:]
-                
-    # Or can be initiazed in all_ones for previous 4 dims as there are no missing frames in RNA
-    nttype_rigidgroup_mask = all_atom_mask.new_zeros(
-        (*butype.shape[:-1], 5, 9),
-    )
-    nttype_rigidgroup_mask[..., 0] = 1
-    nttype_rigidgroup_mask[..., 1] = 1
-    nttype_rigidgroup_mask[..., :4, 2:] = all_atom_mask.new_tensor(
-        nc.chi_angles_mask
-    )
+    # create the mapping for (residx, atom_dense) --> all, i.e. an array
+    # with shape (num_res, dense) containing the all indices for this bio_complex
+    residx_dense_to_all = restype_dense_to_all[butype]
+    residx_dense_mask = restype_dense_mask[butype]
 
-    lookuptable = nc.atom_order.copy()
-    lookuptable[""] = 0
-    lookup = np.vectorize(lambda x: lookuptable[x])
-    # get atom index in atom_types that defined in nucleotide_constants
-    nttype_rigidgroup_base_atom27_idx = lookup(
-        nttype_rigidgroup_base_atom_names,
-    )
-    # 5 (nt types) * 7 (torsions) * 3 (frame atom indexs)
-    nttype_rigidgroup_base_atom27_idx = butype.new_tensor(
-        nttype_rigidgroup_base_atom27_idx,
-    )
-    # # 1 * 5 (nt types) * 7 (torsions) * 3 (frame atom indexs)
-    nttype_rigidgroup_base_atom27_idx = (
-        nttype_rigidgroup_base_atom27_idx.view(
-            *((1,) * batch_dims), *nttype_rigidgroup_base_atom27_idx.shape
-        )
-    )
-    # # N * 5 (nt types) * 7 (torsions) * 3 (frame atom indexs)
-    ntidx_rigidgroup_base_atom27_idx = batched_gather(
-        nttype_rigidgroup_base_atom27_idx,
-        butype.to(torch.long),
-        dim=-3,
-        no_batch_dims=batch_dims,
-    )
-    base_atom_pos = batched_gather(
-        all_atom_positions,
-        ntidx_rigidgroup_base_atom27_idx.to(torch.long),
-        dim=-2,
-        no_batch_dims=len(all_atom_positions.shape[:-2]),
-    )
-    # # 0, 1, 2 are the index of frame atoms
-    gt_frames = Rigid.from_3_points(
-        p_neg_x_axis=base_atom_pos[..., 0, :],
-        origin=base_atom_pos[..., 1, :],
-        p_xy_plane=base_atom_pos[..., 2, :],
-        eps=1e-8,
-    )
+    bio_complex["dense_atom_exists"] = residx_dense_mask
+    bio_complex["residx_dense_to_all"] = residx_dense_to_all.long()
 
-    group_exists = batched_gather(
-        nttype_rigidgroup_mask,
-        butype.type(torch.long),
-        dim=-2,
-        no_batch_dims=batch_dims,
-    )
+    # create the gather indices for mapping back
+    residx_all_to_dense = restype_all_to_dense[butype]
+    bio_complex["residx_all_to_dense"] = residx_all_to_dense.long()
 
-    gt_atoms_exist = batched_gather(
-        all_atom_mask,
-        ntidx_rigidgroup_base_atom27_idx.to(torch.long),
-        dim=-1,
-        no_batch_dims=len(all_atom_mask.shape[:-1]),
-    )
-    gt_exists = torch.min(gt_atoms_exist, dim=-1)[0] * group_exists
-    
-    rots = torch.eye(3, dtype=all_atom_mask.dtype, device=butype.device)
-    rots = torch.tile(rots, (*((1,) * batch_dims), 9, 1, 1))
-    rots[..., 0, 0, 0] = -1
-    rots[..., 0, 2, 2] = -1
-    rots = Rotation(rot_mats=rots)
-    
-    gt_frames = gt_frames.compose(Rigid(rots, None))
-    
-    gt_frames_tensor = gt_frames.to_tensor_4x4()
-    
-    bio_complex["rigidgroups_gt_frames"] = gt_frames_tensor
-    bio_complex["rigidgroups_gt_exists"] = gt_exists
-    bio_complex["rigidgroups_group_exists"] = group_exists
-    
+    residx_all_mask = restype_all_mask[butype]
+    bio_complex["all_atom_exists"] = residx_all_mask
+
     return bio_complex
 
-
-def make_atom14_positions(bio_complex):
-    """Constructs denser atom positions (14 dimensions instead of 37)."""
-    residx_atom14_mask = bio_complex["atom14_atom_exists"]
-    residx_atom14_to_atom37 = bio_complex["residx_atom14_to_atom37"]
+    
+def make_dense_atom_positions(bio_complex):
+    residx_dense_mask = bio_complex["dense_atom_exists"]
+    residx_dense_to_all = bio_complex["residx_dense_to_all"]
 
     # Create a mask for known ground truth positions.
-    residx_atom14_gt_mask = residx_atom14_mask * batched_gather(
+    residx_dense_gt_mask = residx_dense_mask * batched_gather(
         bio_complex["all_atom_mask"],
-        residx_atom14_to_atom37,
+        residx_dense_to_all,
         dim=-1,
         no_batch_dims=len(bio_complex["all_atom_mask"].shape[:-1]),
     )
 
     # Gather the ground truth positions.
-    residx_atom14_gt_positions = residx_atom14_gt_mask[..., None] * (
+    residx_dense_gt_positions = residx_dense_gt_mask[..., None] * (
         batched_gather(
             bio_complex["all_atom_positions"],
-            residx_atom14_to_atom37,
+            residx_dense_to_all,
             dim=-2,
             no_batch_dims=len(bio_complex["all_atom_positions"].shape[:-2]),
         )
     )
 
-    bio_complex["atom14_atom_exists"] = residx_atom14_mask
-    bio_complex["atom14_gt_exists"] = residx_atom14_gt_mask
-    bio_complex["atom14_gt_positions"] = residx_atom14_gt_positions
+    bio_complex["dense_atom_exists"] = residx_dense_mask
+    bio_complex["dense_atom_gt_exists"] = residx_dense_gt_mask
+    bio_complex["dense_atom_gt_positions"] = residx_dense_gt_positions
 
-    # As the atom naming is ambiguous for 7 of the 20 amino acids, provide
-    # alternative ground truth coordinates where the naming is swapped
+    bio_complex = compute_alt_gt(bio_complex)
+
+    return bio_complex
+
+def compute_alt_gt(bio_complex):
+    protein_pos = bio_complex["protein_pos"]
+    butype = torch.clamp(bio_complex["butype"][protein_pos], max=20)
+
     restype_3 = [rc.restype_1to3[res] for res in rc.restypes]
     restype_3 += ["UNK"]
 
@@ -958,28 +821,31 @@ def make_atom14_positions(bio_complex):
             for index, correspondence in enumerate(correspondences):
                 renaming_matrix[index, correspondence] = 1.0
         all_matrices[resname] = renaming_matrix
-    
+
     renaming_matrices = torch.stack(
         [all_matrices[restype] for restype in restype_3]
     )
 
     # Pick the transformation matrices for the given residue sequence
     # shape (num_res, 14, 14).
-    renaming_transform = renaming_matrices[bio_complex["butype"]]
+    renaming_transform = renaming_matrices[butype]
 
     # Apply it to the ground truth positions. shape (num_res, 14, 3).
     alternative_gt_positions = torch.einsum(
-        "...rac,...rab->...rbc", residx_atom14_gt_positions, renaming_transform
+        "...rac,...rab->...rbc", bio_complex["dense_atom_gt_positions"][protein_pos, :14], renaming_transform
     )
-    bio_complex["atom14_alt_gt_positions"] = alternative_gt_positions
+    bio_complex["dense_atom_alt_gt_positions"] = padto(
+        alternative_gt_positions,
+        bio_complex["dense_atom_gt_positions"].shape
+    )
 
     # Create the mask for the alternative ground truth (differs from the
     # ground truth mask, if only one of the atoms in an ambiguous pair has a
     # ground truth position).
     alternative_gt_mask = torch.einsum(
-        "...ra,...rab->...rb", residx_atom14_gt_mask, renaming_transform
+        "...ra,...rab->...rb", bio_complex["dense_atom_gt_exists"][protein_pos, :14], renaming_transform
     )
-    bio_complex["atom14_alt_gt_exists"] = alternative_gt_mask
+    bio_complex["dense_atom_alt_gt_exists"] = padto(alternative_gt_mask, bio_complex["dense_atom_gt_exists"].shape)
 
     # Create an ambiguous atoms mask.  shape: (21, 14).
     restype_atom14_is_ambiguous = bio_complex["all_atom_mask"].new_zeros((21, 14))
@@ -996,56 +862,16 @@ def make_atom14_positions(bio_complex):
             restype_atom14_is_ambiguous[restype, atom_idx2] = 1
 
     # From this create an ambiguous_mask for the given sequence.
-    bio_complex["atom14_atom_is_ambiguous"] = restype_atom14_is_ambiguous[
-        bio_complex["butype"]
-    ]
-
+    bio_complex["dense_atom_is_ambiguous"] = padto(
+        restype_atom14_is_ambiguous[butype],
+        bio_complex["dense_atom_gt_exists"].shape
+    )
     return bio_complex
 
 
-def make_atom23_positions(bio_complex):
-    """Constructs denser atom positions (23 dimensions instead of 27)."""
-    residx_atom23_mask = bio_complex["atom23_atom_exists"]
-    residx_atom23_to_atom27 = bio_complex["residx_atom23_to_atom27"]
-
-    # Create a mask for known ground truth positions.
-    residx_atom23_gt_mask = residx_atom23_mask * batched_gather(
-        bio_complex["all_atom_mask"],
-        residx_atom23_to_atom27,
-        dim=-1,
-        no_batch_dims=len(bio_complex["all_atom_mask"].shape[:-1]),
-    )
-
-    # Gather the ground truth positions.
-    residx_atom23_gt_positions = residx_atom23_gt_mask[..., None] * (
-        batched_gather(
-            bio_complex["all_atom_positions"],
-            residx_atom23_to_atom27,
-            dim=-2,
-            no_batch_dims=len(bio_complex["all_atom_positions"].shape[:-2]),
-        )
-    )
-
-    bio_complex["atom23_atom_exists"] = residx_atom23_mask
-    bio_complex["atom23_gt_exists"] = residx_atom23_gt_mask
-    bio_complex["atom23_gt_positions"] = residx_atom23_gt_positions
-
-    return bio_complex
-
-@curry1
-def make_dense_atom_positions(bio_complex, complex_type):
-    if complex_type == "protein":
-        return make_atom14_positions(bio_complex)
-    else:
-        return make_atom23_positions(bio_complex)
-
-
-def atom37_to_frames(bio_complex, eps=1e-8):
-    butype = bio_complex["butype"]
-    all_atom_positions = bio_complex["all_atom_positions"]
-    all_atom_mask = bio_complex["all_atom_mask"]
-
+def atom37_to_frames(butype, all_atom_positions, all_atom_mask, eps=1e-8):
     batch_dims = len(butype.shape[:-1])
+    butype = torch.clamp(butype, max=20)
 
     restype_rigidgroup_base_atom_names = np.full([21, 8, 3], "", dtype=object)
     restype_rigidgroup_base_atom_names[:, 0, :] = ["C", "CA", "N"]
@@ -1170,20 +996,138 @@ def atom37_to_frames(bio_complex, eps=1e-8):
     gt_frames_tensor = gt_frames.to_tensor_4x4()
     alt_gt_frames_tensor = alt_gt_frames.to_tensor_4x4()
 
-    bio_complex["rigidgroups_gt_frames"] = gt_frames_tensor
-    bio_complex["rigidgroups_gt_exists"] = gt_exists
-    bio_complex["rigidgroups_group_exists"] = group_exists
-    bio_complex["rigidgroups_group_is_ambiguous"] = residx_rigidgroup_is_ambiguous
-    bio_complex["rigidgroups_alt_gt_frames"] = alt_gt_frames_tensor
+    return (
+        gt_frames_tensor,
+        gt_exists,
+        group_exists,
+        residx_rigidgroup_is_ambiguous,
+        alt_gt_frames_tensor
+    )
 
-    return bio_complex
+
+def atom27_to_frames(butype, all_atom_positions, all_atom_mask, eps=1e-8):
+    butype = correct_rna_butype(butype)
+
+    batch_dims = len(butype.shape[:-1])
+    # 5 NT types (AUGC plus X), 9 groups
+    nttype_rigidgroup_base_atom_names = np.full([5, 9, 3], "", dtype=object)
+    # atoms that constitute backbone frame 1
+    nttype_rigidgroup_base_atom_names[:, 0, :] = ["O4'", "C4'", "C3'"]
+    nttype_rigidgroup_base_atom_names[:, 1, :] = ["O4'", "C1'", "C2'"]
+
+    for restype, restype_letter in enumerate(nc.restypes):
+        # keep one-letter format in RNA
+        resname = restype_letter
+        for torsion_idx in range(7):
+            if nc.chi_angles_mask[restype][torsion_idx]:
+                names = nc.chi_angles_atoms[resname][torsion_idx]
+                nttype_rigidgroup_base_atom_names[
+                    restype, torsion_idx + 2, :
+                ] = names[1:]
+                
+    # Or can be initiazed in all_ones for previous 4 dims as there are no missing frames in RNA
+    nttype_rigidgroup_mask = all_atom_mask.new_zeros(
+        (*butype.shape[:-1], 5, 9),
+    )
+    nttype_rigidgroup_mask[..., 0] = 1
+    nttype_rigidgroup_mask[..., 1] = 1
+    nttype_rigidgroup_mask[..., :4, 2:] = all_atom_mask.new_tensor(
+        nc.chi_angles_mask
+    )
+
+    lookuptable = nc.atom_order.copy()
+    lookuptable[""] = 0
+    lookup = np.vectorize(lambda x: lookuptable[x])
+    # get atom index in atom_types that defined in nucleotide_constants
+    nttype_rigidgroup_base_atom27_idx = lookup(
+        nttype_rigidgroup_base_atom_names,
+    )
+    # 5 (nt types) * 7 (torsions) * 3 (frame atom indexs)
+    nttype_rigidgroup_base_atom27_idx = butype.new_tensor(
+        nttype_rigidgroup_base_atom27_idx,
+    )
+    # # 1 * 5 (nt types) * 7 (torsions) * 3 (frame atom indexs)
+    nttype_rigidgroup_base_atom27_idx = (
+        nttype_rigidgroup_base_atom27_idx.view(
+            *((1,) * batch_dims), *nttype_rigidgroup_base_atom27_idx.shape
+        )
+    )
+    # # N * 5 (nt types) * 7 (torsions) * 3 (frame atom indexs)
+    ntidx_rigidgroup_base_atom27_idx = batched_gather(
+        nttype_rigidgroup_base_atom27_idx,
+        butype.to(torch.long),
+        dim=-3,
+        no_batch_dims=batch_dims,
+    )
+    base_atom_pos = batched_gather(
+        all_atom_positions,
+        ntidx_rigidgroup_base_atom27_idx.to(torch.long),
+        dim=-2,
+        no_batch_dims=len(all_atom_positions.shape[:-2]),
+    )
+    # # 0, 1, 2 are the index of frame atoms
+    gt_frames = Rigid.from_3_points(
+        p_neg_x_axis=base_atom_pos[..., 0, :],
+        origin=base_atom_pos[..., 1, :],
+        p_xy_plane=base_atom_pos[..., 2, :],
+        eps=1e-8,
+    )
+
+    group_exists = batched_gather(
+        nttype_rigidgroup_mask,
+        butype.type(torch.long),
+        dim=-2,
+        no_batch_dims=batch_dims,
+    )
+
+    gt_atoms_exist = batched_gather(
+        all_atom_mask,
+        ntidx_rigidgroup_base_atom27_idx.to(torch.long),
+        dim=-1,
+        no_batch_dims=len(all_atom_mask.shape[:-1]),
+    )
+    gt_exists = torch.min(gt_atoms_exist, dim=-1)[0] * group_exists
+    
+    rots = torch.eye(3, dtype=all_atom_mask.dtype, device=butype.device)
+    rots = torch.tile(rots, (*((1,) * batch_dims), 9, 1, 1))
+    rots[..., 0, 0, 0] = -1
+    rots[..., 0, 2, 2] = -1
+    rots = Rotation(rot_mats=rots)
+    
+    gt_frames = gt_frames.compose(Rigid(rots, None))
+    
+    gt_frames_tensor = gt_frames.to_tensor_4x4()
+
+    residx_rigidgroup_is_ambiguous = torch.zeros_like(group_exists)
+    alt_gt_frames_tensor = torch.zeros_like(gt_frames_tensor)
+
+    return (
+        gt_frames_tensor,
+        gt_exists,
+        group_exists,
+        residx_rigidgroup_is_ambiguous,
+        alt_gt_frames_tensor
+    )
 
 @curry1
-def all_atom_to_frames(bio_complex, complex_type, eps=1e-8):
-    if complex_type == "protein":
-        return atom37_to_frames(bio_complex, eps)
-    else:
-        return atom27_to_frames(bio_complex, eps)
+def all_atom_to_frames(bio_complex, eps=1e-8):
+    butype = bio_complex["butype"]
+    all_atom_positions = bio_complex["all_atom_positions"]
+    all_atom_mask = bio_complex["all_atom_mask"]
+    protein_pos, rna_pos = bio_complex["protein_pos"], bio_complex["rna_pos"]
+
+    (
+        bio_complex["rigidgroups_gt_frames"],
+        bio_complex["rigidgroups_gt_exists"],
+        bio_complex["rigidgroups_group_exists"],
+        bio_complex["rigidgroups_group_is_ambiguous"],
+        bio_complex["rigidgroups_alt_gt_frames"],
+    ) = map_padcat(
+        atom37_to_frames(butype[protein_pos], all_atom_positions[protein_pos], all_atom_mask[protein_pos], eps),
+        atom27_to_frames(butype[rna_pos], all_atom_positions[rna_pos], all_atom_mask[rna_pos], eps),
+    )
+
+    return bio_complex
     
 
 def get_chi_atom_indices(complex_type):
@@ -1228,8 +1172,9 @@ def get_chi_atom_indices(complex_type):
 
 
 def atom37_to_torsion_angles(
-    bio_complex,
-    prefix="",
+    butype,
+    all_atom_positions,
+    all_atom_mask,
 ):
     """
     Convert coordinates to torsion angles.
@@ -1256,20 +1201,21 @@ def atom37_to_torsion_angles(
         "(prefix)torsion_angles_mask" ([*, N_res, 7])
             Torsion angles mask
     """
-    butype = bio_complex[prefix + "butype"]
-    all_atom_positions = bio_complex[prefix + "all_atom_positions"]
-    all_atom_mask = bio_complex[prefix + "all_atom_mask"]
+    if butype.shape[-1] == 0:
+        return None, None, None
 
     butype = torch.clamp(butype, max=20)
 
+    num_atoms = all_atom_mask.shape[-1]
+
     pad = all_atom_positions.new_zeros(
-        [*all_atom_positions.shape[:-3], 1, 37, 3]
+        [*all_atom_positions.shape[:-3], 1, num_atoms, 3]
     )
     prev_all_atom_positions = torch.cat(
         [pad, all_atom_positions[..., :-1, :, :]], dim=-3
     )
 
-    pad = all_atom_mask.new_zeros([*all_atom_mask.shape[:-2], 1, 37])
+    pad = all_atom_mask.new_zeros([*all_atom_mask.shape[:-2], 1, num_atoms])
     prev_all_atom_mask = torch.cat([pad, all_atom_mask[..., :-1, :]], dim=-2)
 
     pre_omega_atom_pos = torch.cat(
@@ -1388,16 +1334,14 @@ def atom37_to_torsion_angles(
         torsion_angles_sin_cos * mirror_torsion_angles[..., None]
     )
 
-    bio_complex[prefix + "torsion_angles_sin_cos"] = torsion_angles_sin_cos
-    bio_complex[prefix + "alt_torsion_angles_sin_cos"] = alt_torsion_angles_sin_cos
-    bio_complex[prefix + "torsion_angles_mask"] = torsion_angles_mask
 
-    return bio_complex
+    return torsion_angles_sin_cos, alt_torsion_angles_sin_cos, torsion_angles_mask
 
 
 def atom27_to_torsion_angles(
-    bio_complex,
-    prefix="",
+    butype,
+    all_atom_positions,
+    all_atom_mask,
 ):
     """
     Convert coordinates to torsion angles.
@@ -1422,10 +1366,7 @@ def atom27_to_torsion_angles(
         "(prefix)torsion_angles_mask" ([*, N_res, 7])
             Torsion angles mask
     """
-    butype = bio_complex[prefix + "butype"]
-    all_atom_positions = bio_complex[prefix + "all_atom_positions"]
-    all_atom_mask = bio_complex[prefix + "all_atom_mask"]
-    
+    butype = correct_rna_butype(butype)
     butype = torch.clamp(butype, max=4)
 
     chi_atom_indices = torch.as_tensor(
@@ -1487,65 +1428,65 @@ def atom27_to_torsion_angles(
     torsion_angles_sin_cos = torsion_angles_sin_cos * all_atom_mask.new_tensor(
         [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
     )[((None,) * len(torsion_angles_sin_cos.shape[:-2])) + (slice(None), None)]
+    alt_torsion_angles_sin_cos = torch.zeros_like(torsion_angles_sin_cos)
 
-    bio_complex[prefix + "torsion_angles_sin_cos"] = torsion_angles_sin_cos
-    bio_complex[prefix + "torsion_angles_mask"] = torsion_angles_mask
-
-    return bio_complex
+    return torsion_angles_sin_cos, alt_torsion_angles_sin_cos, torsion_angles_mask
 
 @curry1
 def all_atom_to_torsion_angles(
     bio_complex,
-    complex_type,
     prefix="",
 ):
-    if complex_type == "protein":
-        return atom37_to_torsion_angles(bio_complex, prefix)
-    else:
-        return atom27_to_torsion_angles(bio_complex, prefix)
+    butype = bio_complex[prefix + 'butype']
+    all_atom_positions = bio_complex[prefix + 'all_atom_positions']
+    all_atom_mask = bio_complex[prefix + 'all_atom_mask']
+
+    protein_pos, rna_pos = bio_complex["protein_pos"], bio_complex["rna_pos"]
+    (
+        bio_complex[prefix + "torsion_angles_sin_cos"],
+        bio_complex[prefix + "alt_torsion_angles_sin_cos"],
+        bio_complex[prefix + "torsion_angles_mask"]
+    ) = map_padcat(
+        atom37_to_torsion_angles(
+            butype[..., protein_pos],
+            all_atom_positions[..., protein_pos, :, :],
+            all_atom_mask[..., protein_pos, :]
+        ),
+        atom27_to_torsion_angles(
+            butype[..., rna_pos],
+            all_atom_positions[..., rna_pos, :27, :],
+            all_atom_mask[..., rna_pos, :27]
+        ),
+        axis=butype.ndim - 1,
+    )
+
+    return bio_complex
 
 
-@curry1
-def get_backbone_frames(bio_complex, complex_type):
-    if complex_type == "protein":
-        # DISCREPANCY: AlphaFold uses tensor_7s here. I don't know why.
-        bio_complex["backbone_rigid_tensor"] = bio_complex["rigidgroups_gt_frames"][
-            ..., 0, :, :
+def get_backbone_frames(bio_complex):
+    protein_pos, rna_pos = bio_complex["protein_pos"], bio_complex["rna_pos"]
+    bio_complex["backbone_rigid_tensor"] = padcat(
+        [
+            bio_complex["rigidgroups_gt_frames"][protein_pos, 0:1, :, :],
+            bio_complex["rigidgroups_gt_frames"][rna_pos, 0:2, :, :],
+        ],
+    )
+    bio_complex["backbone_rigid_mask"] = padcat(
+        [
+            bio_complex["rigidgroups_gt_exists"][protein_pos, 0:1],
+            bio_complex["rigidgroups_gt_exists"][rna_pos, 0:2],
         ]
-        bio_complex["backbone_rigid_mask"] = bio_complex["rigidgroups_gt_exists"][..., 0]
-        
-    else:
-        # backbone tensors are the first two tensors in gt_frames_tensor
-        bio_complex["backbone_rigid_tensor"] = bio_complex["rigidgroups_gt_frames"][
-            ..., 0:2, :, :
-        ]
-        bio_complex["backbone_rigid_mask"] = bio_complex["rigidgroups_gt_exists"][..., 0:2]
+    )
     
     return bio_complex
 
 
-def get_chi_angles_protein(bio_complex):
-    dtype = bio_complex["all_atom_mask"].dtype
-    bio_complex["chi_angles_sin_cos"] = (
-        bio_complex["torsion_angles_sin_cos"][..., 3:, :]
-    ).to(dtype)
-    bio_complex["chi_mask"] = bio_complex["torsion_angles_mask"][..., 3:].to(dtype)
-
-    return bio_complex
-
-def get_chi_angles_rna(bio_complex):
+def get_chi_angles(bio_complex):
     dtype = bio_complex["all_atom_mask"].dtype
     bio_complex["chi_angles_sin_cos"] = bio_complex["torsion_angles_sin_cos"].to(dtype)
     bio_complex["chi_mask"] = bio_complex["torsion_angles_mask"].to(dtype)
-
     return bio_complex
 
-@curry1
-def get_chi_angles(bio_complex, complex_type):
-    if complex_type == "protein":
-        return get_chi_angles_protein(bio_complex)
-    else:
-        return get_chi_angles_rna(bio_complex)
 
 def _randint(lower, upper, device, g):
     # inclusive
@@ -1634,12 +1575,15 @@ def crop_to_size(
         for i, (dim_size, dim) in enumerate(zip(shape_schema[k], v.shape)):
             is_num_res = dim_size == NUM_RES
             if i == 0 and k.startswith("template"):
-                slices.append(slice(templates_crop_start, templates_crop_start + num_templates_crop_size))
+                slices.append(list(range(templates_crop_start, templates_crop_start + num_templates_crop_size)))
             elif is_num_res:
                 slices.append(res_slices)
             else:
-                slices.append(slice(0, dim))
-        bio_complex[k] = v[slices]
+                slices.append(list(range(0, dim)))
+        for i, s in enumerate(slices):
+            v = torch.index_select(v, i, torch.tensor(s, device=v.device, dtype=torch.int64))
+
+        bio_complex[k] = v
 
     bio_complex["seq_length"] = bio_complex["seq_length"].new_tensor(len(res_slices))
     bio_complex.update(origins)
@@ -1679,7 +1623,6 @@ def spatial_crop_to_size_multiple_chains(
     """
 
     ca_idx = rc.atom_order["CA"]
-    assert bio_complex['all_atom_positions'].ndim == 3
     ca_positions = bio_complex['all_atom_positions'][:, ca_idx, :]
     ca_masks = bio_complex['all_atom_mask'][:, ca_idx]
     asym_id = bio_complex['asym_id']
@@ -1765,39 +1708,3 @@ def random_crop_to_size_multiple_chains(
         res_slices.extend(list(range(start, end)))
 
     return res_slices
-
-# new added function
-def get_frame_from_torsion(torsion_sincos, axis):
-    # 以下旋转矩阵都是在右手坐标系下计算的。
-    # 三维旋转矩阵可由三个矩阵相乘得到。
-    # 此处的旋转矩阵需要左乘，且以逆时针为正。
-    # 例如：R是一个旋转矩阵，X是一个三维列向量[x,y,z]’。RX就是把X旋转。
-    
-    all_rots = torch.zeros(torsion_sincos.shape[0], 3, 3)
-    
-    for bu_idx in range(torsion_sincos.shape[0]):
-        sin_ = torsion_sincos[bu_idx][0]
-        cos_ = torsion_sincos[bu_idx][1]
-        
-        if axis == 'x':
-            all_rots[bu_idx, 0, 0] = 1
-            all_rots[bu_idx, 1, 1] = cos_
-            all_rots[bu_idx, 1, 2] = -sin_
-            all_rots[bu_idx, 2, 1] = sin_
-            all_rots[bu_idx, 2, 2] = cos_
-        if axis == 'z':
-            all_rots[bu_idx, 0, 0] = cos_
-            all_rots[bu_idx, 1, 1] = cos_
-            all_rots[bu_idx, 1, 0] = sin_
-            all_rots[bu_idx, 0, 1] = -sin_
-            all_rots[bu_idx, 2, 2] = 1
-        if axis == 'y':
-            all_rots[bu_idx, 0, 0] = cos_
-            all_rots[bu_idx, 1, 1] = 1
-            all_rots[bu_idx, 0, 2] = sin_
-            all_rots[bu_idx, 2, 0] = -sin_
-            all_rots[bu_idx, 2, 2] = cos_
-    
-    T_torsion = Rigid(Rotation(rot_mats=all_rots), None)
-    
-    return T_torsion

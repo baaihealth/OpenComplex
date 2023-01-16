@@ -60,6 +60,10 @@ ulimit -n 40960
 # val_mmcif_dir=$workdir/mmcif
 # val_features_dir=$workdir/features
 
+# # filter a subset of full data
+# train_filter_path="--train_filter_path $workdir/easy/pdb_list.txt"
+# val_filter_path="--val_filter_path $workdir/easy/eval_list.txt"
+
 # config_preset=multimer_fast
 
 # complex_type=protein
@@ -87,24 +91,18 @@ seed=42
 
 
 # Directory in which to output checkpoints
-output_dir=/sharefs/baaihealth/zhaoming/master/experiment/init_nb16_fapeW3_bbcat_clamp15_geoW05_torW05_lddtW001O4_bb05_ang05_decayStep5e4_dataMSAv3_newSMv5_atom27_newCons_complex
+output_dir=/tmp/train_result
 
 batch_size=1
 # number of training data
-train_epoch_len=780
+train_epoch_len=5000
 gpu_num=`nvidia-smi --list-gpus | wc -l`
-max_epochs=300
+max_epochs=15
 
-
-wandb_project="opencomplex"
 experiment_name="my_experiment"
 
 # uncomment for debug mode, which sets data loader worker num to 1, and disable wandb
 # debug="--debug"
-
-wandb_project="RNAFold"
-wandb_entity="baai-health-team"
-experiment_name="init_nb16_fapeW3_bbcat_clamp15_geoW05_torW05_lddtW001O4_bb05_ang05_decayStep5e4_dataMSAv3_newSMv5_atom27_newCons_complex"
 
 cmd="
 MASTER_ADDR=$MASTER_ADDR MASTER_PORT=12345 WORLD_SIZE=$RLAUNCH_REPLICA_TOTAL NODE_RANK=$RLAUNCH_REPLICA
@@ -131,6 +129,8 @@ python train_opencomplex.py
     --experiment_name $experiment_name
     $train_label_dir
     $val_label_dir
+    $train_filter_path
+    $val_filter_path
     ${train_chain_data_cache_path}
     ${debug}
 "

@@ -91,7 +91,7 @@ If you find our open-sourced code & models helpful to your research, please also
   author={Jingcheng, Yu and Zhaoming, Chen and Zhaoqun, Li and Mingliang, Zeng and Wenjun, Lin and He, Huang and Qiwei, Ye},
   title={Code of OpenComplex},
   year={2022},
-  howpublished = {\url{}}
+  howpublished = {\url{https://github.com/baaihealth/OpenComplex}}
 }
 ```
 It is recommended to also cite OpenFold and AlphaFold.

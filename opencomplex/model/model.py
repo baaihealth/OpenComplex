@@ -53,7 +53,7 @@ from opencomplex.utils.feats import (
     atom14_to_atom37,
 )
 from opencomplex.utils.feats_rna import (
-    atom9_to_atom28_train,
+    atom23_to_atom27_train,
 )
 from opencomplex.utils.tensor_utils import (
     add,
@@ -415,10 +415,10 @@ class OpenComplex(nn.Module):
             )
             outputs["final_atom_mask"] = feats["atom37_atom_exists"]
         else:
-            outputs["final_atom_positions"] = atom9_to_atom28_train(
+            outputs["final_atom_positions"] = atom23_to_atom27_train(
                 outputs["sm"]["positions"][-1], feats
             )
-            outputs["final_atom_mask"] = feats["atom28_atom_exists"]
+            outputs["final_atom_mask"] = feats["atom27_atom_exists"]
         outputs["final_affine_tensor"] = outputs["sm"]["frames"][-1]
 
         # Save embeddings for use during the next recycling iteration

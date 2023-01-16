@@ -67,14 +67,14 @@ ulimit -n 40960
 # ======================================================================
 
 # =================== RNA dataset example ==========================
-workdir=/sharefs/baaihealth/public_datasets/RNA/data_ready_all
-mmcif_dir=$workdir/mmcif
-features_dir=$workdir/feature
-val_mmcif_dir=$workdir/mmcif
-val_features_dir=$workdir/feature
-train_label_dir="--train_label_dir $workdir/label"
-val_label_dir="--val_label_dir $workdir/label"
- 
+workdir=/sharefs/baaihealth/public_datasets/RNA/uni_test/msa_test
+mmcif_dir=$workdir/train_no_puzzle/mmcif
+features_dir=$workdir/train_no_puzzle/feature
+val_mmcif_dir=$workdir/validation_puzzle/mmcif
+val_features_dir=$workdir/validation_puzzle/feature
+train_label_dir="--train_label_dir $workdir/train_no_puzzle/label"
+val_label_dir="--val_label_dir $workdir/validation_puzzle/label"
+
 config_preset=rna
 
 complex_type=RNA
@@ -87,12 +87,13 @@ seed=42
 
 
 # Directory in which to output checkpoints
-output_dir=/tmp/train_result
+output_dir=/sharefs/baaihealth/zhaoming/master/experiment/init_nb16_fapeW3_bbcat_clamp15_geoW05_torW05_lddtW001O4_bb05_ang05_decayStep5e4_dataMSAv3_newSMv5_atom27_newCons_complex
 
 batch_size=1
-train_epoch_len=5000
+# number of training data
+train_epoch_len=780
 gpu_num=`nvidia-smi --list-gpus | wc -l`
-max_epochs=15
+max_epochs=300
 
 
 wandb_project="opencomplex"
@@ -101,6 +102,9 @@ experiment_name="my_experiment"
 # uncomment for debug mode, which sets data loader worker num to 1, and disable wandb
 # debug="--debug"
 
+wandb_project="RNAFold"
+wandb_entity="baai-health-team"
+experiment_name="init_nb16_fapeW3_bbcat_clamp15_geoW05_torW05_lddtW001O4_bb05_ang05_decayStep5e4_dataMSAv3_newSMv5_atom27_newCons_complex"
 
 cmd="
 MASTER_ADDR=$MASTER_ADDR MASTER_PORT=12345 WORLD_SIZE=$RLAUNCH_REPLICA_TOTAL NODE_RANK=$RLAUNCH_REPLICA

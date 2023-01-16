@@ -816,7 +816,7 @@ config_rna = mlc.ConfigDict({
         "predict": {
             "fixed_size": False,
             "subsample_templates": False,  # We want top templates.
-            "masked_msa_replace_fraction": 0.15,
+            "masked_msa_replace_fraction": 0.0,
             "max_msa_clusters": 512,
             "max_template_hits": 0,
             "max_templates": 0,
@@ -829,7 +829,7 @@ config_rna = mlc.ConfigDict({
         "eval": {
             "fixed_size": False,
             "subsample_templates": False,  # We want top templates.
-            "masked_msa_replace_fraction": 0.15,
+            "masked_msa_replace_fraction": 0.0,
             "max_msa_clusters": 128,
             "max_template_hits": 0,
             "max_templates": 0,
@@ -842,7 +842,7 @@ config_rna = mlc.ConfigDict({
         "train": {
             "fixed_size": False,
             "subsample_templates": False,
-            "masked_msa_replace_fraction": 0.15,
+            "masked_msa_replace_fraction": 0.0,
             "max_extra_msa": 5120,
             "max_msa_clusters": 128,
             "max_template_hits": 0,
@@ -905,7 +905,7 @@ config_rna = mlc.ConfigDict({
             "c_hidden_pair_att": 16,
             "no_heads_msa": 8,
             "no_heads_pair": 8,
-            "no_blocks": 8,
+            "no_blocks": 16,
             "transition_n": 16,
             # set at 1 when training, else None
             "blocks_per_ckpt": 1,
@@ -962,16 +962,10 @@ config_rna = mlc.ConfigDict({
             "no_blocks": 8,
             "no_transition_layers": 1,
             "no_resnet_blocks": 2,
-            "no_angles": 4,
+            "no_angles": 7,
             "trans_scale_factor": 10,
             "epsilon": 1e-12,  # 1e-12,
             "inf": 1e5,
-        },
-        "lddt": {
-            # TODO: check the number of bins
-            "no_bins": 25,
-            "c_in": c_s,
-            "c_hidden": 128,
         },
         "heads": {
             "torsion_head": {
@@ -993,6 +987,12 @@ config_rna = mlc.ConfigDict({
             "masked_msa": {
                 "c_m": c_m,
                 "c_out": 7,
+            },
+            "lddt": {
+                # TODO: check the number of bins
+                "no_bins": 25,
+                "c_in": c_s,
+                "c_hidden": 128,
             },
         },
         "template": {
@@ -1029,22 +1029,59 @@ config_rna = mlc.ConfigDict({
             "weight": 0.0,
         },
         "distorsion": {
-            "weight": 0.1,
+            "weight": 0.5,
+        },
+        "disbackbone": {
+            "weight": 0.6,
+            "eps": 1e-8,  # 1e-8,
+        },
+        "angbackbone": {
+            "weight": 0.6,
+            "eps": 1e-8,  # 1e-8,
+            "tolerance_factor_soft": 0.0,
+            "tolerance_factor_hard": 12.0,
         },
         "fape": {
             "backbone": {
-                "clamp_distance": 10.0,
+                "clamp_distance": 15.0,
                 "loss_unit_distance": 10.0,
                 "weight": 0.5,
                 "enable_use_clamped_fape": False,
             },
             "sidechain": {
-                "clamp_distance": 10.0,
+                "clamp_distance": 15.0,
                 "length_scale": 10.0,
                 "weight": 0.5,
             },
             "eps": 1e-4,
-            "weight": 2.0,
+            "weight": 3.0,
+        },
+        "bb_fape": {
+            "backbone": {
+                "clamp_distance": 15.0,
+                "loss_unit_distance": 10.0,
+                "weight": 0.5,
+                "enable_use_clamped_fape": False,
+            },
+            "eps": 1e-4,
+            "weight": 0.0,
+        },
+        "sc_fape": {
+            "sidechain": {
+                "clamp_distance": 15.0,
+                "length_scale": 10.0,
+                "weight": 0.5,
+            },
+            "eps": 1e-4,
+            "weight": 0.0,
+        },
+         "lddt": {
+            "min_resolution": 0.1,
+            "max_resolution": 3.0,
+            "cutoff": 15.0,
+            "no_bins": 25,
+            "eps": 1e-8,  # 1e-10,
+            "weight": 0.01,
         },
         "masked_msa": {
             "eps": 1e-8,  # 1e-8,
@@ -1056,6 +1093,12 @@ config_rna = mlc.ConfigDict({
             "angle_norm_weight": 0.01,
             "eps": 1e-8,  # 1e-6,
             "weight": 1.0,
+        },
+        "violation": {
+            "violation_tolerance_factor": 0.0,
+            "clash_overlap_tolerance": 1.5,
+            "eps": 1e-8,  # 1e-6,
+            "weight": 0.0,
         },
         "eps": 1e-8,
     },

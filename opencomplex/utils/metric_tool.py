@@ -394,126 +394,62 @@ class ValidationMetrics:
     ):
         metrics = {}
 
-        # B, N, 28, 3
-        gt_coords_28 = batch["all_atom_positions"]
-        # B, N, 9, 3
-        pred_coords_9 = outputs["sm"]['positions'][-1][0].unsqueeze(dim=0)
+        # B, N, 23, 3
+        gt_coords_23 = batch["atom23_gt_positions"]
+        # B, N, 23, 3
+        pred_coords_23 = outputs["sm"]['positions'][-1][0].unsqueeze(dim=0)
         # pred_coords = outputs["final_atom_positions"]
-        # B, N, 28
+        # B, N, 27
         all_atom_mask = batch["all_atom_mask"]
+        # B, N, 23
+        atom23_mask = batch["atom23_gt_exists"]
         
-        # print(batch["butype"].shape)
+        gt_coords_masked = gt_coords_23 * atom23_mask[..., None]
+        pred_coords_masked = pred_coords_23 * atom23_mask[..., None]
         
-        chi_C_pos = []
-        chi_N_pos = []
-        chi_C_mask = []
-        chi_N_mask = []
-        for nt_idx in range(batch["butype"].shape[1]):
-            butype_idx = batch["butype"][0][nt_idx].item()
-            if butype_idx == 4:
-                chi_C_pos.append(gt_coords_28.new_zeros((1, 3)))
-                chi_N_pos.append(gt_coords_28.new_zeros((1, 3)))
-                chi_C_mask.append(all_atom_mask.new_zeros((1)))
-                chi_N_mask.append(all_atom_mask.new_zeros((1)))
-                continue
-            restype = dict(zip(nucleotide_constants.restype_order.values(), nucleotide_constants.restype_order.keys()))[butype_idx]
-            N_idx = nucleotide_constants.atom_order[nucleotide_constants.chi_angles_atoms[restype][3][2]]
-            C_idx = nucleotide_constants.atom_order[nucleotide_constants.chi_angles_atoms[restype][3][3]]
-            chi_C_pos.append(gt_coords_28[..., nt_idx, C_idx, :])
-            chi_N_pos.append(gt_coords_28[..., nt_idx, N_idx, :])
-            chi_C_mask.append(all_atom_mask[..., nt_idx, C_idx])
-            chi_N_mask.append(all_atom_mask[..., nt_idx, N_idx])
-        
-        measured_atom_order = ["C5'", "C4'", "O4'", "N", "C1'", "O5'", "P", "O3'", "Cb"]
-        
-        gt_coords_9 = torch.cat(
-            [   # C5'
-                gt_coords_28[..., 4:5, :],
-                # C4'
-                gt_coords_28[..., 3:4, :],
-                # O4'
-                gt_coords_28[..., 6:7, :],
-                # N
-                torch.stack(chi_N_pos, dim=-3).unsqueeze(dim=0),
-                # C1'
-                gt_coords_28[..., 0:1, :],
-                # O5'
-                gt_coords_28[..., 5:6, :],
-                # P
-                gt_coords_28[..., 9:10, :],
-                # O3'
-                gt_coords_28[..., 7:8, :],
-                # C base
-                torch.stack(chi_C_pos, dim=-3).unsqueeze(dim=0),
-            ],
-            dim=-2,
-        )
-        
-        # print(torch.stack(chi_N_mask, dim=0).shape)
-        # print(all_atom_mask[..., 4:5].shape)
-        
-        all_atom_mask_9 = torch.cat(
-            [   # C5'
-                all_atom_mask[..., 4:5],
-                # C4'
-                all_atom_mask[..., 3:4],
-                # O4'
-                all_atom_mask[..., 6:7],
-                # N
-                torch.stack(chi_N_mask, dim=0).unsqueeze(dim=0),
-                # C1'
-                all_atom_mask[..., 0:1],
-                # O5'
-                all_atom_mask[..., 5:6],
-                # P
-                all_atom_mask[..., 9:10],
-                # O3'
-                all_atom_mask[..., 7:8],
-                # C base
-                torch.stack(chi_C_mask, dim=0).unsqueeze(dim=0),
-            ],
-            dim=-1,
-        )
-        
-        # This is super janky for superimposition. Fix later
-        gt_coords_masked = gt_coords_9 * all_atom_mask_9[..., None]
-        pred_coords_masked = pred_coords_9 * all_atom_mask_9[..., None]
+        measured_atom_order = ["C3'", "C4'", "O4'", "C2'", "C1'", "C5'", "O3'", "O5'", "P", "OP1", "OP2", "N", "O2'", "Cb"]
         
         for i in range(len(measured_atom_order)):
             ca_pos = i
             gt_coords_masked_ca = gt_coords_masked[..., ca_pos, :]
             pred_coords_masked_ca = pred_coords_masked[..., ca_pos, :]
-            all_atom_mask_ca = all_atom_mask[..., ca_pos]
+            atom_mask_ca = atom23_mask[..., ca_pos]
 
             drmsd_ca_score = compute_drmsd(
                 pred_coords_masked_ca,
                 gt_coords_masked_ca,
-                mask=all_atom_mask_ca,
+                mask=atom_mask_ca,
             )
 
             metrics["drmsd_{}".format(measured_atom_order[i])] = drmsd_ca_score.to(torch.float32)
             
-        
         lddt_O4_score = lddt_O4(
-                pred_coords_9,
-                gt_coords_28,
-                all_atom_mask,
-                eps=1e-8,
-                per_residue=False,
-            )
+            # 23 atom
+            pred_coords_masked,
+            # 23 atom
+            gt_coords_masked,
+            # no used here
+            all_atom_mask.new_ones(pred_coords_masked.shape[:-1]),
+            eps=1e-8,
+            per_residue=False,
+        )
 
         metrics["lddt_O4"] = lddt_O4_score.to(torch.float32)
+        # pos of O4', index in 23-atom format
+        ca_pos = 2
+        gt_coords_ca = gt_coords_23[..., ca_pos, :]
+        pred_coords_ca = pred_coords_23[..., ca_pos, :]
+        atom_mask_ca = atom23_mask[..., ca_pos]
 
         if(superimposition_metrics):
-            #NOTE (chenzhaoming): 这里的gt_coords_masked_ca是上面for循环的哪一个
             superimposed_pred, _ = superimpose(
-                gt_coords_masked_ca, pred_coords_masked_ca,
+                gt_coords_ca, pred_coords_ca, atom_mask_ca
             )
             gdt_ts_score = gdt_ts(
-                superimposed_pred, gt_coords_masked_ca, all_atom_mask_ca
+                superimposed_pred, gt_coords_masked_ca, atom_mask_ca
             )
             gdt_ha_score = gdt_ha(
-                superimposed_pred, gt_coords_masked_ca, all_atom_mask_ca
+                superimposed_pred, gt_coords_masked_ca, atom_mask_ca
             )
 
             metrics["gdt_ts"] = gdt_ts_score

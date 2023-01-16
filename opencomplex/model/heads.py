@@ -263,12 +263,16 @@ class AuxiliaryHeadsRNA(nn.Module):
         self.geometry = Geometry_Head(**config["geometry_head"])
         self.torsion = Torsion_Head(**config["torsion_head"])
         self.mask_msa = MaskedMSAHead(**config["masked_msa"])
-
+        self.plddt = PerResidueLDDTCaPredictor(**config["lddt"])
         self.config = config
 
     def forward(self, outputs):
         aux_out = {}
 
+        lddt_logits = self.plddt(outputs["single"])
+        outputs["lddt_logits"] = lddt_logits
+        # TODO: Required for relaxation later on
+        outputs["plddt"] = compute_plddt(lddt_logits)
         aux_out["geometry_head"] = self.geometry(outputs["pair"])
         aux_out["torsion_head"] = self.torsion(outputs["single"])
         aux_out["masked_msa_logits"] = self.mask_msa(outputs["msa"])

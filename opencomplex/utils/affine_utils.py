@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
+from typing import Callable
 
 import enum
 class QuaternionCoeffOrder(enum.Enum):
@@ -119,7 +120,7 @@ class AffineTransformation:
         return AffineTransformation(rots, trans)
 
     @staticmethod
-    def from_3_points_pos(p_x_axis, origin, p_xy_plane, eps=1e-4):
+    def from_3_points_pos(p_x_axis, origin, p_xy_plane, eps=1e-8):
         e0 = p_x_axis - origin
         e0 = e0/(e0.norm(dim=-1, keepdim=True) + eps)
 
@@ -138,12 +139,12 @@ class AffineTransformation:
     @staticmethod
     def from_3_points(p_neg_x_axis, origin, p_xy_plane, eps=1e-8):
         e0 = origin - p_neg_x_axis
-        e0 = e0/e0.norm(dim=-1, keepdim=True)
+        e0 = e0/(e0.norm(dim=-1, keepdim=True) + eps)
 
         e1 = p_xy_plane - origin
         dot = (e0*e1).sum(dim=-1, keepdim=True)
         e1 = e1 - e0*dot
-        e1 = e1/e1.norm(dim=-1, keepdim=True)
+        e1 = e1/(e1.norm(dim=-1, keepdim=True) + eps)
 
         e2 = torch.cross(e0, e1, dim=-1)
 
@@ -184,6 +185,31 @@ class AffineTransformation:
         t = self.t.unsqueeze(dim if dim >= 0 else dim - 1)
 
         return AffineTransformation(r, t)
+    
+    def map_tensor_fn(self, fn: Callable[torch.Tensor, torch.Tensor]):
+        """
+            Apply a Tensor -> Tensor function to underlying translation and
+            rotation tensors, mapping over the translation/rotation dimensions
+            respectively.
+
+            Args:
+                fn:
+                    A Tensor -> Tensor function to be mapped over the Rigid
+            Returns:
+                The transformed Rigid object
+        """
+        rot_mats = self.r.view(self.r.shape[:-2] + (9,))
+        rot_mats = torch.stack(
+            list(map(fn, torch.unbind(rot_mats, dim=-1))), dim=-1
+        )
+        new_rots = rot_mats.view(rot_mats.shape[:-1] + (3, 3))
+        # new_rots = self.r.map_tensor_fn(fn) 
+        new_trans = torch.stack(
+            list(map(fn, torch.unbind(self.t, dim=-1))), 
+            dim=-1
+        )
+
+        return AffineTransformation(new_rots, new_trans)
     
     @staticmethod
     def from_tensor_4x4(t):

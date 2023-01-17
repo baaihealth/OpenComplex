@@ -24,10 +24,8 @@ import pickle
 from typing import Optional, Sequence, List, Any
 
 import ml_collections as mlc
-import numpy as np
 import pytorch_lightning as pl
 import torch
-from torch.utils.data import RandomSampler
 
 from opencomplex.data import (
     data_pipeline,
@@ -44,22 +42,9 @@ class OpenComplexSingleDataset(torch.utils.data.Dataset):
         data_dir: str,
         config: mlc.ConfigDict,
         feature_dir: Optional[str] = None,
-        rna_label_dir: Optional[str] = None,
-        alignment_dir: Optional[str] = None,
-        template_mmcif_dir: Optional[str] = None,
-        max_template_date: Optional[str] = None,
-        kalign_binary_path: str = '/usr/bin/kalign',
-        max_template_hits: int = 4,
-        obsolete_pdbs_file_path: Optional[str] = None,
-        template_release_dates_cache_path: Optional[str] = None,
-        shuffle_top_k_prefiltered: Optional[int] = None,
-        treat_pdb_as_distillation: bool = True,
         complex_type: ComplexType = ComplexType.PROTEIN,
         filter_path: Optional[str] = None,
         mode: str = "train", 
-        alignment_index: Optional[Any] = None,
-        _output_raw: bool = False,
-        _structure_index: Optional[Any] = None,
     ):
         """
             Args:
@@ -70,30 +55,6 @@ class OpenComplexSingleDataset(torch.utils.data.Dataset):
                     A dataset config object. See opencomplex.config
                 feature_dir:
                     A path to a directory containing features.pkl
-                alignment_dir:
-                    A path to a directory containing only data in the format 
-                    output by an AlignmentRunner 
-                    (defined in opencomplex.features.alignment_runner).
-                    I.e. a directory of directories named {PDB_ID}_{CHAIN_ID}
-                    or simply {PDB_ID}, each containing .a3m, .sto, and .hhr
-                    files.
-                template_mmcif_dir:
-                    Path to a directory containing template mmCIF files.
-                kalign_binary_path:
-                    Path to kalign binary.
-                max_template_hits:
-                    An upper bound on how many templates are considered. During
-                    training, the templates ultimately used are subsampled
-                    from this total quantity.
-                template_release_dates_cache_path:
-                    Path to the output of scripts/generate_mmcif_cache.
-                obsolete_pdbs_file_path:
-                    Path to the file containing replacements for obsolete PDBs.
-                shuffle_top_k_prefiltered:
-                    Whether to uniformly shuffle the top k template hits before
-                    parsing max_template_hits of them. Can be used to
-                    approximate DeepMind's training-time template subsampling
-                    scheme much more performantly.
                 treat_pdb_as_distillation:
                     Whether to assume that .pdb files in the data_dir are from
                     the self-distillation set (and should be subjected to
@@ -105,95 +66,33 @@ class OpenComplexSingleDataset(torch.utils.data.Dataset):
         self.data_dir = data_dir
         self.config = config
         self.feature_dir = feature_dir
-        self.rna_label_dir = rna_label_dir
-        self.alignment_dir = alignment_dir
-        self.treat_pdb_as_distillation = treat_pdb_as_distillation
         self.mode = mode
-        self.alignment_index = alignment_index
-        self._output_raw = _output_raw
-        self._structure_index = _structure_index
         self.complex_type = complex_type
 
-        self.supported_exts = [".cif", ".core", ".pdb"]
+        self.supported_exts = [".cif"]
 
         valid_modes = ["train", "eval", "predict"]
         if(mode not in valid_modes):
             raise ValueError(f'mode must be one of {valid_modes}')
 
-        self.use_prepared_feature = os.path.exists(feature_dir)
-        if self.use_prepared_feature:
-            self._chain_ids = list(os.listdir(feature_dir))
-            if(filter_path is not None):
-                with open(filter_path, "r") as f:
-                    chains_to_include = set([l.strip() for l in f.readlines()])
+        self._chain_ids = list(os.listdir(feature_dir))
+        if(filter_path is not None):
+            with open(filter_path, "r") as f:
+                chains_to_include = set([l.strip() for l in f.readlines()])
 
-                self._chain_ids = [c for c in self._chain_ids if c in chains_to_include]
-            template_featurizer = None
-        else:
-            if(template_release_dates_cache_path is None):
-                logging.warning(
-                    "Template release dates cache does not exist. Remember to run "
-                    "scripts/generate_mmcif_cache.py before running OpenComplex"
-                )
-            if(alignment_index is not None):
-                self._chain_ids = list(alignment_index.keys())
-            else:
-                self._chain_ids = list(os.listdir(alignment_dir))
-            
-            if(filter_path is not None):
-                with open(filter_path, "r") as f:
-                    chains_to_include = set([l.strip() for l in f.readlines()])
-
-                self._chain_ids = [c for c in self._chain_ids if c in chains_to_include]
-        
-            template_featurizer = templates.TemplateHitFeaturizer(
-                mmcif_dir=template_mmcif_dir,
-                max_template_date=max_template_date,
-                max_hits=max_template_hits,
-                kalign_binary_path=kalign_binary_path,
-                release_dates_path=template_release_dates_cache_path,
-                obsolete_pdbs_path=obsolete_pdbs_file_path,
-                _shuffle_top_k_prefiltered=shuffle_top_k_prefiltered,
-            )
-
+            self._chain_ids = [c for c in self._chain_ids if c in chains_to_include]
 
         self._chain_id_to_idx_dict = {
             chain: i for i, chain in enumerate(self._chain_ids)
         }
 
         self.data_pipeline = data_pipeline.DataPipeline(
-            template_featurizer=template_featurizer,
+            template_featurizer=None,
         )
 
-        if(not self._output_raw):
-            self.feature_pipeline = feature_pipeline.FeaturePipeline(config) 
+        self.feature_pipeline = feature_pipeline.FeaturePipeline(config) 
                 
-
-    def _parse_mmcif(self, path, file_id, chain_id, alignment_dir, alignment_index):
-        with open(path, 'r') as f:
-            mmcif_string = f.read()
-
-        mmcif_object = mmcif_parsing.parse(
-            file_id=file_id, mmcif_string=mmcif_string
-        )
-
-        # Crash if an error is encountered. Any parsing errors should have
-        # been dealt with at the alignment stage.
-        if(mmcif_object.mmcif_object is None):
-            raise list(mmcif_object.errors.values())[0]
-
-        mmcif_object = mmcif_object.mmcif_object
-
-        data = self.data_pipeline.process_mmcif(
-            mmcif=mmcif_object,
-            alignment_dir=alignment_dir,
-            chain_id=chain_id,
-            alignment_index=alignment_index
-        )
-
-        return data
-
-    def _parse_mmcif_with_prepared_feature(self, path, file_id, chain_id, feature_dir, rna_label_dir):
+    def _parse_mmcif_with_prepared_feature(self, path, file_id, chain_id, feature_dir):
         if os.path.exists(os.path.join(feature_dir, 'mmcif_obj.pkl')):
             # Pre-compute mmcif_object for some of the samples to speedup computation
             mmcif_object = pickle.load(open(os.path.join(feature_dir, 'mmcif_obj.pkl'), 'rb'))
@@ -215,7 +114,6 @@ class OpenComplexSingleDataset(torch.utils.data.Dataset):
         data = self.data_pipeline.process_mmcif_with_prepared_feature(
             mmcif=mmcif_object,
             feature_dir=feature_dir,
-            rna_label_dir=rna_label_dir,
             chain_id=chain_id,
             complex_type=self.complex_type,
         )
@@ -230,84 +128,41 @@ class OpenComplexSingleDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         name = self.idx_to_chain_id(idx)
-        feature_dir = None if self.feature_dir is None else os.path.join(self.feature_dir, name)
-        alignment_dir = None if self.alignment_dir is None else os.path.join(self.alignment_dir, name)
-        rna_label_dir = None if self.rna_label_dir is None else os.path.join(self.rna_label_dir, name)
-
-        alignment_index = None
-        if(self.alignment_index is not None):
-            alignment_dir = self.alignment_dir
-            alignment_index = self.alignment_index[name]
+        feature_dir = os.path.join(self.feature_dir, name)
 
         if(self.mode == 'train' or self.mode == 'eval'):
             spl = os.path.splitext(name)[0].rsplit('_', 1)
-            if (len(spl) == 2) and self.complex_type != ComplexType.MIX:
+            if (len(spl) == 2):
                 file_id, chain_id = spl
             else:
-                file_id = spl[0]
-                chain_id = None
+                file_id, chain_id = spl[0], None
 
             path = os.path.join(self.data_dir, file_id)
-            structure_index_entry = None
-            if(self._structure_index is not None):
-                structure_index_entry = self._structure_index[name]
-                assert(len(structure_index_entry["files"]) == 1)
-                filename, _, _ = structure_index_entry["files"][0]
-                ext = os.path.splitext(filename)[1]
-            else:
-                ext = None
-                for e in self.supported_exts:
-                    if(os.path.exists(path + e)):
-                        ext = e
-                        break
+            ext = None
+            for e in self.supported_exts:
+                if(os.path.exists(path + e)):
+                    ext = e
+                    break
 
-                if(ext is None):
-                    raise ValueError("Invalid file type")
+            if(ext is None):
+                raise ValueError("Invalid file type")
 
             path += ext
             if(ext == ".cif"):
-                if self.use_prepared_feature:
-                    data = self._parse_mmcif_with_prepared_feature(
-                        path, file_id, chain_id, feature_dir, rna_label_dir=rna_label_dir
-                    )
-                else:
-                    data = self._parse_mmcif(
-                        path, file_id, chain_id, alignment_dir, alignment_index,
-                    )
-            elif(ext == ".core"):
-                data = self.data_pipeline.process_core(
-                    path, alignment_dir, alignment_index,
-                )
-            elif(ext == ".pdb"):
-                structure_index = None
-                if(self._structure_index is not None):
-                    structure_index = self._structure_index[name]
-                data = self.data_pipeline.process_pdb(
-                    pdb_path=path,
-                    alignment_dir=alignment_dir,
-                    is_distillation=self.treat_pdb_as_distillation,
-                    chain_id=chain_id,
-                    alignment_index=alignment_index,
-                    _structure_index=structure_index,
+                data = self._parse_mmcif_with_prepared_feature(
+                    path, file_id, chain_id, feature_dir
                 )
             else:
                raise ValueError("Extension branch missing") 
         else:
-            path = os.path.join(name, name + ".fasta")
-            data = self.data_pipeline.process_fasta(
-                fasta_path=path,
-                alignment_dir=alignment_dir,
-                alignment_index=alignment_index,
-            )
-
-        if(self._output_raw):
-            return data
+            data = self.data_pipeline.process_prepared_features(feature_dir)
 
         feats = self.feature_pipeline.process_features(
             data, self.mode 
         )
 
-        feats["batch_idx"] = torch.tensor([idx for _ in range(feats["butype"].shape[-1])], dtype=torch.int64, device=feats["butype"].device)
+        feats["batch_idx"] = torch.tensor([idx for _ in range(feats["butype"].shape[-1])],
+                                          dtype=torch.int64, device=feats["butype"].device)
 
         return feats
 
@@ -575,12 +430,8 @@ class OpenComplexDataLoader(torch.utils.data.DataLoader):
 class OpenComplexDataModule(pl.LightningDataModule):
     def __init__(self,
         config: mlc.ConfigDict,
-        template_mmcif_dir: Optional[str] = None,
-        max_template_date: Optional[str] = None,
         train_data_dir: Optional[str] = None,
         train_feature_dir: Optional[str] = None,
-        train_label_dir: Optional[str] = None,
-        train_alignment_dir: Optional[str] = None,
         train_chain_data_cache_path: Optional[str] = None,
         distillation_data_dir: Optional[str] = None,
         distillation_feature_dir: Optional[str] = None,
@@ -588,35 +439,21 @@ class OpenComplexDataModule(pl.LightningDataModule):
         distillation_chain_data_cache_path: Optional[str] = None,
         val_data_dir: Optional[str] = None,
         val_feature_dir: Optional[str] = None,
-        val_label_dir: Optional[str] = None,
-        val_alignment_dir: Optional[str] = None,
         predict_data_dir: Optional[str] = None,
         predict_feature_dir: Optional[str] = None,
-        predict_label_dir: Optional[str] = None,
-        predict_alignment_dir: Optional[str] = None,
-        kalign_binary_path: str = '/usr/bin/kalign',
         train_filter_path: Optional[str] = None,
         val_filter_path: Optional[str] = None,
         distillation_filter_path: Optional[str] = None,
-        obsolete_pdbs_file_path: Optional[str] = None,
-        template_release_dates_cache_path: Optional[str] = None,
         batch_seed: Optional[int] = None,
         train_epoch_len: int = 50000, 
-        _distillation_structure_index_path: Optional[str] = None,
-        alignment_index_path: Optional[str] = None,
-        distillation_alignment_index_path: Optional[str] = None,
         complex_type: str = "protein",
         **kwargs
     ):
         super(OpenComplexDataModule, self).__init__()
 
         self.config = config
-        self.template_mmcif_dir = template_mmcif_dir
-        self.max_template_date = max_template_date
         self.train_data_dir = train_data_dir
         self.train_feature_dir = train_feature_dir
-        self.train_label_dir = train_label_dir
-        self.train_alignment_dir = train_alignment_dir
         self.train_chain_data_cache_path = train_chain_data_cache_path
         self.distillation_data_dir = distillation_data_dir
         self.distillation_feature_dir = distillation_feature_dir
@@ -626,20 +463,11 @@ class OpenComplexDataModule(pl.LightningDataModule):
         )
         self.val_data_dir = val_data_dir
         self.val_feature_dir = val_feature_dir
-        self.val_label_dir = val_label_dir
-        self.val_alignment_dir = val_alignment_dir
         self.predict_data_dir = predict_data_dir
         self.predict_feature_dir = predict_feature_dir
-        self.predict_label_dir = predict_label_dir
-        self.predict_alignment_dir = predict_alignment_dir
-        self.kalign_binary_path = kalign_binary_path
         self.train_filter_path = train_filter_path
         self.val_filter_path = val_filter_path
         self.distillation_filter_path = distillation_filter_path
-        self.template_release_dates_cache_path = (
-            template_release_dates_cache_path
-        )
-        self.obsolete_pdbs_file_path = obsolete_pdbs_file_path
         self.batch_seed = batch_seed
         self.train_epoch_len = train_epoch_len
         self.complex_type = ComplexType[complex_type]
@@ -652,47 +480,11 @@ class OpenComplexDataModule(pl.LightningDataModule):
 
         self.training_mode = self.train_data_dir is not None
 
-        if(self.training_mode and train_alignment_dir is None and train_feature_dir is None):
-            raise ValueError(
-                'In training mode, train_alignment_dir or train_feature_dir must be specified'
-            )
-        elif(not self.training_mode and predict_alignment_dir is None and predict_feature_dir is None):
-            raise ValueError(
-                'In inference mode, predict_alignment_dir or predict_feature_dir must be specified'
-            )
-        elif(val_data_dir is not None and val_alignment_dir is None and val_feature_dir is None):
-            raise ValueError(
-                'If val_data_dir is specified, val_alignment_dir or val_feature_dir must '
-                'be specified as well'
-        )
-
-        # An ad-hoc measure for our particular filesystem restrictions
-        self._distillation_structure_index = None
-        if(_distillation_structure_index_path is not None):
-            with open(_distillation_structure_index_path, "r") as fp:
-                self._distillation_structure_index = json.load(fp)
-
-        self.alignment_index = None
-        if(alignment_index_path is not None):
-            with open(alignment_index_path, "r") as fp:
-                self.alignment_index = json.load(fp)
-
-        self.distillation_alignment_index = None
-        if(distillation_alignment_index_path is not None):
-            with open(distillation_alignment_index_path, "r") as fp:
-                self.distillation_alignment_index = json.load(fp)
 
     def setup(self, stage=None):
         # Most of the arguments are the same for the three datasets 
         dataset_gen = partial(OpenComplexSingleDataset,
-            template_mmcif_dir=self.template_mmcif_dir,
-            max_template_date=self.max_template_date,
             config=self.config,
-            kalign_binary_path=self.kalign_binary_path,
-            template_release_dates_cache_path=
-                self.template_release_dates_cache_path,
-            obsolete_pdbs_file_path=
-                self.obsolete_pdbs_file_path,
             complex_type=self.complex_type,
         )
 
@@ -700,15 +492,8 @@ class OpenComplexDataModule(pl.LightningDataModule):
             train_dataset = dataset_gen(
                 data_dir=self.train_data_dir,
                 feature_dir=self.train_feature_dir,
-                rna_label_dir=self.train_label_dir,
-                alignment_dir=self.train_alignment_dir,
                 filter_path=self.train_filter_path,
-                max_template_hits=self.config.train.max_template_hits,
-                shuffle_top_k_prefiltered=
-                    self.config.train.shuffle_top_k_prefiltered,
-                treat_pdb_as_distillation=False,
                 mode="train",
-                alignment_index=self.alignment_index,
             )
 
             distillation_dataset = None
@@ -716,13 +501,8 @@ class OpenComplexDataModule(pl.LightningDataModule):
                 distillation_dataset = dataset_gen(
                     data_dir=self.distillation_data_dir,
                     feature_dir=self.distillation_feature_dir,
-                    alignment_dir=self.distillation_alignment_dir,
                     filter_path=self.distillation_filter_path,
-                    max_template_hits=self.config.train.max_template_hits,
-                    treat_pdb_as_distillation=True,
                     mode="train",
-                    alignment_index=self.distillation_alignment_index,
-                    _structure_index=self._distillation_structure_index,
                 )
 
                 d_prob = self.config.train.distillation_prob
@@ -760,10 +540,7 @@ class OpenComplexDataModule(pl.LightningDataModule):
                 self.eval_dataset = dataset_gen(
                     data_dir=self.val_data_dir,
                     feature_dir=self.val_feature_dir,
-                    rna_label_dir=self.val_label_dir,
-                    alignment_dir=self.val_alignment_dir,
                     filter_path=self.val_filter_path,
-                    max_template_hits=self.config.eval.max_template_hits,
                     mode="eval",
                 )
             else:
@@ -772,10 +549,7 @@ class OpenComplexDataModule(pl.LightningDataModule):
             self.predict_dataset = dataset_gen(
                 data_dir=self.predict_data_dir,
                 feature_dir=self.predict_feature_dir,
-                rna_label_dir=self.predict_label_dir,
-                alignment_dir=self.predict_alignment_dir,
                 filter_path=None,
-                max_template_hits=self.config.predict.max_template_hits,
                 mode="predict",
             )
 

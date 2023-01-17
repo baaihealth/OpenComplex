@@ -234,10 +234,6 @@ def main(args):
         model_module.load_state_dict(sd)
         logging.info("Successfully loaded model weights...")
  
-    # TorchScript components of the model
-    if(args.script_modules):
-        script_preset_(model_module)
-
     #data_module = DummyDataLoader("new_batch.pickle")
     data_module = OpenComplexDataModule(
         config=config.data, 
@@ -357,28 +353,6 @@ if __name__ == "__main__":
         help="Directory containing precomputed training features"
     )
     parser.add_argument(
-        "--train_alignment_dir", type=str,
-        help="Directory containing precomputed training alignments"
-    )
-    parser.add_argument(
-        "--train_label_dir", type=str,
-        help="Directory containing precomputed training labels"
-    )
-    parser.add_argument(
-        "--template_mmcif_dir", type=str,
-        help="Directory containing mmCIF files to search for templates"
-    )
-    parser.add_argument(
-        "--max_template_date", type=str,
-        help='''Cutoff for all templates. In training mode, templates are also 
-                filtered by the release date of the target'''
-    )
-    parser.add_argument(
-        "--template_release_dates_cache_path", type=str, default=None,
-        help="""Output of scripts/generate_mmcif_cache.py run on template mmCIF
-                files."""
-    )
-    parser.add_argument(
         "--distillation_data_dir", type=str, default=None,
         help="Directory containing training PDB files"
     )
@@ -387,28 +361,12 @@ if __name__ == "__main__":
         help="Directory containing precomputed distillation features"
     )
     parser.add_argument(
-        "--distillation_alignment_dir", type=str, default=None,
-        help="Directory containing precomputed distillation alignments"
-    )
-    parser.add_argument(
         "--val_data_dir", type=str, default=None,
         help="Directory containing validation mmCIF files"
     )
     parser.add_argument(
         "--val_feature_dir", type=str, default=None,
         help="Directory containing precomputed validation features"
-    )
-    parser.add_argument(
-        "--val_alignment_dir", type=str, default=None,
-        help="Directory containing precomputed validation alignments"
-    )
-    parser.add_argument(
-        "--val_label_dir", type=str, default=None,
-        help="Directory containing precomputed validation features"
-    )
-    parser.add_argument(
-        "--kalign_binary_path", type=str, default='/usr/bin/kalign',
-        help="Path to the kalign binary"
     )
     parser.add_argument(
         "--train_filter_path", type=str, default=None,
@@ -425,15 +383,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--distillation_filter_path", type=str, default=None,
         help="""See --train_filter_path"""
-    )
-    parser.add_argument(
-        "--obsolete_pdbs_file_path", type=str, default=None,
-        help="""Path to obsolete.dat file containing list of obsolete PDBs and 
-             their replacements."""
-    )
-    parser.add_argument(
-        "--use_small_bfd", type=bool_type, default=False,
-        help="Whether to use a reduced version of the BFD database"
     )
     parser.add_argument(
         "--seed", type=int, default=None,
@@ -493,10 +442,6 @@ if __name__ == "__main__":
         help="wandb username or team name to which runs are attributed"
     )
     parser.add_argument(
-        "--script_modules", type=bool_type, default=False,
-        help="Whether to TorchScript eligible components of them model"
-    )
-    parser.add_argument(
         "--train_chain_data_cache_path", type=str, default=None,
     )
     parser.add_argument(
@@ -527,18 +472,8 @@ if __name__ == "__main__":
         "--complex_type", type=str, default="protein", choices=["protein", "RNA", "mix"],
     )
     parser.add_argument(
-        "--_distillation_structure_index_path", type=str, default=None,
-    )
-    parser.add_argument(
-        "--alignment_index_path", type=str, default=None,
-        help="Training alignment index. See the README for instructions."
-    )
-    parser.add_argument(
-        "--distillation_alignment_index_path", type=str, default=None,
-        help="Distillation alignment index. See the README for instructions."
-    )
-    parser.add_argument(
         "--debug", default=False, action="store_true",
+        help="No wandb, no parallel in data module for debug mode."
     )
     parser.add_argument(
         "--batch_size", default=1, type=int,

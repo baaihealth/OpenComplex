@@ -50,35 +50,20 @@ if(
 
 torch.set_grad_enabled(False)
 
-from opencomplex.data import templates, feature_pipeline, data_pipeline
+from opencomplex.data import feature_pipeline, data_pipeline
 from opencomplex.config.config import model_config
 from opencomplex.model.model import OpenComplex
 from opencomplex.np import residue_constants, protein, nucleotide_constants, rna, complex
 from opencomplex.utils.complex_utils import ComplexType
-from opencomplex.utils.metric_tool import MetricTool
 import opencomplex.np.relax.relax as relax
 from opencomplex.utils.tensor_utils import (
     tensor_tree_map,
 )
-from opencomplex.utils.trace_utils import (
-    pad_feature_dict_seq,
-    trace_model_,
-)
 import tqdm
-from scripts.utils import add_data_args
 
 
-TRACING_INTERVAL = 50
-
-def get_target_list(args, infer_from_fasta):
-    if infer_from_fasta:
-        target_list = [target.split('.')[:-1] for target in os.listdir(dir) if target.endswith((".fasta", ".fa"))]
-    else:
-        if args.complex_type == 'protein':
-            feature_exist = lambda target: os.path.exists(os.path.join(args.features_dir, target, "features.pkl"))
-            target_list = [target for target in os.listdir(args.features_dir) if feature_exist(target)]
-        else:
-            target_list = [target for target in os.listdir(args.features_dir)]
+def get_target_list(args):
+    target_list = [target for target in os.listdir(args.features_dir)]
 
     if args.target_list_file is not None:
         if os.path.exists(args.target_list_file):
@@ -89,76 +74,70 @@ def get_target_list(args, infer_from_fasta):
             logger.warning("target list file %s provided but not exist.", args.target_list_file)
 
     return sorted(target_list)
-        
 
-def precompute_alignments(tags, seqs, alignment_dir, args):
-    for tag, seq in zip(tags, seqs):
-        tmp_fasta_path = os.path.join(args.output_dir, f"tmp_{os.getpid()}.fasta")
-        with open(tmp_fasta_path, "w") as fp:
-            fp.write(f">{tag}\n{seq}")
+def init_worker(args, device_q):
+    global model, data_processor, feature_processor, model_device, config
 
-        local_alignment_dir = os.path.join(alignment_dir, tag)
-        if(args.use_precomputed_alignments is None and not os.path.isdir(local_alignment_dir)):
-            logger.info(f"Generating alignments for {tag}...")
-                
-            os.makedirs(local_alignment_dir)
+    if device_q is None:
+        model_device = "cpu"
+    else:
+        model_device = f"cuda:{device_q.get()}"
+        torch.cuda.set_device(model_device)
 
-            alignment_runner = data_pipeline.AlignmentRunner(
-                jackhmmer_binary_path=args.jackhmmer_binary_path,
-                hhblits_binary_path=args.hhblits_binary_path,
-                hhsearch_binary_path=args.hhsearch_binary_path,
-                uniref90_database_path=args.uniref90_database_path,
-                mgnify_database_path=args.mgnify_database_path,
-                bfd_database_path=args.bfd_database_path,
-                uniclust30_database_path=args.uniclust30_database_path,
-                pdb70_database_path=args.pdb70_database_path,
-                no_cpus=args.cpus,
+    config = model_config(args.config_preset)
+    model = OpenComplex(config=config, complex_type=ComplexType[args.complex_type])
+    model = model.eval()
+    data_processor = data_pipeline.DataPipeline(
+        template_featurizer=None
+    )
+    feature_processor = feature_pipeline.FeaturePipeline(config.data)
+    path = args.param_path
+
+    checkpoint_basename = get_model_basename(path)
+    if os.path.isdir(path):
+        # A DeepSpeed checkpoint
+        ckpt_path = os.path.join(
+            args.output_dir,
+            checkpoint_basename + ".pt",
+        )
+
+        if not os.path.isfile(ckpt_path):
+            convert_zero_checkpoint_to_fp32_state_dict(
+                path,
+                ckpt_path,
             )
-            alignment_runner.run(
-                tmp_fasta_path, local_alignment_dir
-            )
-        else:
-            logger.info(
-                f"Using precomputed alignments for {tag} at {alignment_dir}..."
-            )
+        d = torch.load(ckpt_path)
+        model.load_state_dict(d["ema"]["params"])
+    else:
+        ckpt_path = path
+        d = torch.load(ckpt_path)
 
-        # Remove temporary FASTA file
-        os.remove(tmp_fasta_path)
+        if "ema" in d:
+            # The public weights have had this done to them already
+            d = d["ema"]["params"]
+        model.load_state_dict(d)
+    logger.info(
+        f"Loaded opencomplex parameters at {path}..."
+    )
+    model = model.to(model_device)
 
-
-def round_up_seqlen(seqlen):
-    return int(math.ceil(seqlen / TRACING_INTERVAL)) * TRACING_INTERVAL
-
-
-def run_model(model, batch, target):
-    with torch.no_grad(): 
-        # Temporarily disable templates if there aren't any in the batch
-        template_enabled = model.config.template.enabled
-        model.config.template.enabled = template_enabled and any([
-            "template_" in k for k in batch
-        ])
-
-        logger.info(f"Running inference for {target}...")
-        t = time.perf_counter()
-        out = model(batch)
-        inference_time = time.perf_counter() - t
-        logger.info(f"Inference time: {inference_time}")
-   
-        model.config.template.enabled = template_enabled
-
-    return out
+    random_seed = args.data_random_seed
+    if random_seed is None:
+        random_seed = random.randrange(2**32)
+    
+    np.random.seed(random_seed)
+    torch.manual_seed(random_seed + 1)
 
 
-def prep_output(out, batch, feature_dict, feature_processor, config_preset, args):
+def prep_output(out, batch, feature_dict, feature_processor, args):
     plddt = out["plddt"]
     mean_plddt = np.mean(plddt)
     
-    if args.complex_type == 'protein':
+    if args.complex_type != 'RNA':
         plddt_b_factors = np.repeat(
             plddt[..., None], residue_constants.atom_type_num, axis=-1
         )
     else:
-        # TODO: complex plddt
         plddt_b_factors = np.repeat(
             plddt[..., None], nucleotide_constants.atom_type_num, axis=-1
         )
@@ -189,28 +168,14 @@ def prep_output(out, batch, feature_dict, feature_processor, config_preset, args
     remark = ', '.join([
         f"no_recycling={no_recycling}",
         f"max_templates={feature_processor.config.predict.max_templates}",
-        f"config_preset={config_preset}",
+        f"config_preset={args.config_preset}",
     ])
-
-    # For multi-chain FASTAs
-    ri = feature_dict["residue_index"]
-    chain_index = (ri - np.arange(ri.shape[0])) / args.multimer_ri_gap
-    chain_index = chain_index.astype(np.int64)
-    cur_chain = 0
-    prev_chain_max = 0
-    for i, c in enumerate(chain_index):
-        if(c != cur_chain):
-            cur_chain = c
-            prev_chain_max = i + cur_chain * args.multimer_ri_gap
-
-        batch["residue_index"][i] -= prev_chain_max
 
     if args.complex_type == 'protein':
         unrelaxed_structure = protein.from_prediction(
             features=batch,
             result=out,
             b_factors=plddt_b_factors,
-            chain_index=chain_index,
             remark=remark,
             parents=template_domain_names,
             parents_chain_index=template_chain_index,
@@ -232,52 +197,6 @@ def prep_output(out, batch, feature_dict, feature_processor, config_preset, args
     return unrelaxed_structure
 
 
-def parse_fasta(data):
-    data = re.sub('>$', '', data, flags=re.M)
-    lines = [
-        l.replace('\n', '')
-        for prot in data.split('>') for l in prot.strip().split('\n', 1)
-    ][1:]
-    tags, seqs = lines[::2], lines[1::2]
-
-    tags = [t.split()[0] for t in tags]
-
-    return tags, seqs
-
-
-def generate_feature_dict(
-    tags,
-    seqs,
-    alignment_dir,
-    data_processor,
-    args,
-):
-    tmp_fasta_path = os.path.join(args.output_dir, f"tmp_{os.getpid()}.fasta")
-    if len(seqs) == 1:
-        tag = tags[0]
-        seq = seqs[0]
-        with open(tmp_fasta_path, "w") as fp:
-            fp.write(f">{tag}\n{seq}")
-
-        local_alignment_dir = os.path.join(alignment_dir, tag)
-        feature_dict = data_processor.process_fasta(
-            fasta_path=tmp_fasta_path, alignment_dir=local_alignment_dir
-        )
-    else:
-        with open(tmp_fasta_path, "w") as fp:
-            fp.write(
-                '\n'.join([f">{tag}\n{seq}" for tag, seq in zip(tags, seqs)])
-            )
-        feature_dict = data_processor.process_multiseq_fasta(
-            fasta_path=tmp_fasta_path, super_alignment_dir=alignment_dir,
-        )
-
-    # Remove temporary FASTA file
-    os.remove(tmp_fasta_path)
-
-    return feature_dict
-
-
 def get_model_basename(model_path):
     return os.path.splitext(
                 os.path.basename(
@@ -286,320 +205,103 @@ def get_model_basename(model_path):
             )[0]
 
 
-def make_output_directory(output_dir, model_name, multiple_model_mode):
-    if multiple_model_mode:
-        prediction_dir = os.path.join(output_dir, "predictions", model_name)
-    else:
-        prediction_dir = os.path.join(output_dir, "predictions")
-    os.makedirs(prediction_dir, exist_ok=True)
-    return prediction_dir
+def main(target, args):
+    global model, data_processor, feature_processor, model_device
+    output_name = target
+    unrelaxed_output_path = os.path.join(
+        args.output_dir, f'{output_name}_unrelaxed.pdb'
+    )
+    if not args.overwrite and os.path.exists(unrelaxed_output_path):
+        return
 
+    feature_dict = data_processor.process_prepared_features(os.path.join(args.features_dir, target))     
 
-def load_models_from_command_line(args, model_device):
-    # Create the output directory
-
-    config_presets = args.config_presets
-    param_paths = args.param_paths
-
-    mode = "monomer"
-
-    num_models = len(config_presets)
-    assert num_models == len(param_paths), "Different number of configs and parameter files provided!"
-    multiple_model_mode = num_models > 1
-
-    if multiple_model_mode:
-        logger.info(f"evaluating multiple models")
-
-    ret = []
-    for config_preset, path in zip(config_presets, param_paths):
-        config = model_config(config_preset)
-        model = OpenComplex(config=config, complex_type=ComplexType[args.complex_type])
-        model = model.eval()
-
-        feature_processor = feature_pipeline.FeaturePipeline(config.data)
-
-        # pytorch checkpoint
-        checkpoint_basename = get_model_basename(path)
-        if os.path.isdir(path):
-            # A DeepSpeed checkpoint
-            ckpt_path = os.path.join(
-                args.output_dir,
-                checkpoint_basename + ".pt",
-            )
-
-            if not os.path.isfile(ckpt_path):
-                convert_zero_checkpoint_to_fp32_state_dict(
-                    path,
-                    ckpt_path,
-                )
-            d = torch.load(ckpt_path)
-            model.load_state_dict(d["ema"]["params"])
-        else:
-            ckpt_path = path
-            d = torch.load(ckpt_path)
-
-            if "ema" in d:
-                # The public weights have had this done to them already
-                d = d["ema"]["params"]
-            model.load_state_dict(d)
-        
-        logger.info(
-            f"Loaded opencomplex parameters at {path}..."
-        )
-        output_directory = make_output_directory(args.output_dir, checkpoint_basename, multiple_model_mode)
-        
-        model = model.to(model_device)
-        ret.append((config_preset, config, model, feature_processor, output_directory))
-
-        if "multimer" in config_preset or "mix" in config_preset:
-            mode = "multimer"
-
-    return ret, mode
-
-
-def list_files_with_extensions(dir, extensions):
-    return [f for f in os.listdir(dir) if f.endswith(extensions)]
-
-
-def get_feature_dict(target, data_processor, alignment_dir, infer_from_fasta, args):
-    if infer_from_fasta:
-        # Gather input sequences
-        filename = os.path.join(args.fasta_dir, f"{target}.fa")
-        if not os.path.exists(filename):
-            filename += "sta"
-        with open(filename, "r", encoding="utf-8") as fp:
-            data = fp.read()
-
-        tags, seqs = parse_fasta(data)
-        # assert len(tags) == len(set(tags)), "All FASTA tags must be unique"
-        tag = '-'.join(tags)
-
-        # Does nothing if the alignments have already been computed
-        precompute_alignments(tags, seqs, alignment_dir, args)
-
-        feature_dict = generate_feature_dict(
-            tags,
-            seqs,
-            alignment_dir,
-            data_processor,
-            args,
-        )
-    else:
-        feature_dict = data_processor.process_prepared_features(os.path.join(args.features_dir, target))
-
-    return feature_dict
-
-def main(worker_id, args, infer_from_fasta):
-    # Create the output directory
-    os.makedirs(args.output_dir, exist_ok=True)
-
-    if args.target_list_file is not None:
-        target_list = get_target_list(args, infer_from_fasta)[worker_id::args.num_workers]
-    else:
-        target_list = os.listdir(args.features_dir)[worker_id::args.num_workers]
-    print('my workid is: %s, my target list is: %s' % (worker_id, target_list))
-    
-    template_featurizer = alignment_dir = None
-    if infer_from_fasta:    
-        template_featurizer = templates.TemplateHitFeaturizer(
-            mmcif_dir=args.template_mmcif_dir,
-            max_template_date=args.max_template_date,
-            max_hits=config.data.predict.max_templates,
-            kalign_binary_path=args.kalign_binary_path,
-            release_dates_path=args.release_dates_path,
-            obsolete_pdbs_path=args.obsolete_pdbs_path
-        )
-
-        if args.use_precomputed_alignments is None:
-            alignment_dir = os.path.join(output_dir_base, "alignments")
-        else:
-            alignment_dir = args.use_precomputed_alignments
-        
-    data_processor = data_pipeline.DataPipeline(
-        template_featurizer=template_featurizer,
+    batch = feature_processor.process_features(
+        feature_dict, mode='predict',
     )
 
-    _get_feature_dict = partial(
-        get_feature_dict,
-        data_processor=data_processor,
-        alignment_dir=alignment_dir,
-        infer_from_fasta=infer_from_fasta,
-        args=args)
+    batch = {
+        k:torch.as_tensor(v, device=model_device) 
+        for k,v in batch.items()
+    }
 
-    output_dir_base = args.output_dir
-    random_seed = args.data_random_seed
-    if random_seed is None:
-        random_seed = random.randrange(2**32)
-    
-    np.random.seed(random_seed)
-    torch.manual_seed(random_seed + 1)
-    
-    if not os.path.exists(output_dir_base):
-        os.makedirs(output_dir_base)
+    with torch.no_grad(): 
+        # Temporarily disable templates if there aren't any in the batch
+        template_enabled = model.config.template.enabled
+        model.config.template.enabled = template_enabled and any([
+            "template_" in k for k in batch
+        ])
 
-    
-    if args.use_gpu:
-        model_device = f"cuda:{worker_id}"
-        torch.cuda.set_device(model_device)
+        out = model(batch)
+   
+        model.config.template.enabled = template_enabled
+
+    batch = tensor_tree_map(
+        lambda x: np.array(x[..., -1].cpu()),
+        batch
+    )
+
+    for key in ['final_affine_tensor', 'sm', 'geometry_head', 'torsion_head']:
+        if key in out.keys():
+            del(out[key])
+    out = tensor_tree_map(lambda x: np.array(x.cpu()), out)
+
+    unrelaxed_structure = prep_output(
+        out, 
+        batch, 
+        feature_dict, 
+        feature_processor, 
+        args
+    )
+
+    if args.complex_type == 'protein':
+        pdb_generator = protein.to_pdb
+    elif args.complex_type == 'RNA':
+        pdb_generator = rna.to_pdb
     else:
-        model_device = "cpu"
-    logger.info("my model device is %s", model_device)
-    models, mode = load_models_from_command_line(args, model_device)    
-
-    for target in tqdm.tqdm(target_list):
-        cur_tracing_interval = 0
-        feature_dict = None
-        for config_preset, config, model, feature_processor, output_directory in models:
-            output_name = f'{target}_{config_preset}'
-            unrelaxed_output_path = os.path.join(
-                output_directory, f'{output_name}_unrelaxed.pdb'
-            )
-            if args.output_postfix is not None:
-                output_name = f'{output_name}_{args.output_postfix}'
+        pdb_generator = complex.to_pdb
     
-            if not args.overwrite and os.path.exists(unrelaxed_output_path):
-                logger.info(f"Inference result %s already exists, skip...", unrelaxed_output_path)
-                continue
+    with open(unrelaxed_output_path, 'w') as fp:
+        fp.write(pdb_generator(unrelaxed_structure))
 
-            if feature_dict is None:
-                feature_dict = _get_feature_dict(target)
-                if(args.trace_model):
-                    n = feature_dict["butype"].shape[-2]
-                    rounded_seqlen = round_up_seqlen(n)
-                    feature_dict = pad_feature_dict_seq(
-                        feature_dict, rounded_seqlen,
-                    )
+    if not args.skip_relaxation:
+        amber_relaxer = relax.AmberRelaxation(
+            use_gpu=(model_device != "cpu"),
+            **config.relax,
+        )
 
-            processed_feature_dict = feature_processor.process_features(
-                feature_dict, mode='predict',
+        # Relax the prediction.
+        visible_devices = os.getenv("CUDA_VISIBLE_DEVICES", default="")
+        if "cuda" in model_device:
+            device_no = model_device.split(":")[-1]
+            os.environ["CUDA_VISIBLE_DEVICES"] = device_no
+        try:
+            relaxed_pdb_str, _, _ = amber_relaxer.process(prot=unrelaxed_structure)
+            os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
+
+            # Save the relaxed PDB.
+            relaxed_output_path = os.path.join(
+                args.output_dir, f'{output_name}_relaxed.pdb'
             )
-
-            processed_feature_dict = {
-                k:torch.as_tensor(v, device=model_device) 
-                for k,v in processed_feature_dict.items()
-            }
-
-            if(args.trace_model):
-                if(rounded_seqlen > cur_tracing_interval):
-                    logger.info(
-                        f"Tracing model at {rounded_seqlen} residues..."
-                    )
-                    t = time.perf_counter()
-                    trace_model_(model, processed_feature_dict)
-                    tracing_time = time.perf_counter() - t
-                    logger.info(
-                        f"Tracing time: {tracing_time}"
-                    )
-                    cur_tracing_interval = rounded_seqlen
-
-            out = run_model(model, processed_feature_dict, target)
-
-            # Toss out the recycling dimensions --- we don't need them anymore
-            processed_feature_dict = tensor_tree_map(
-                lambda x: x[..., -1], 
-                processed_feature_dict
-            )
-
-            processed_feature_dict = tensor_tree_map(
-                lambda x: np.array(x.cpu()), 
-                processed_feature_dict
-            )
-            for key in ['final_affine_tensor', 'sm', 'geometry_head', 'torsion_head']:
-                if key in out.keys():
-                    del(out[key])
-            out = tensor_tree_map(lambda x: np.array(x.cpu()), out)
-
-            logger.info("plddt: %.5f", np.mean(out['plddt']))
-
-            unrelaxed_structure = prep_output(
-                out, 
-                processed_feature_dict, 
-                feature_dict, 
-                feature_processor, 
-                config_preset,
-                args
-            )
-
-            if args.complex_type == 'protein':
-                pdb_generator = protein.to_pdb
-            elif args.complex_type == 'RNA':
-                pdb_generator = rna.to_pdb
-            else:
-                pdb_generator = complex.to_pdb
+            with open(relaxed_output_path, 'w') as fp:
+                fp.write(relaxed_pdb_str)
             
-            with open(unrelaxed_output_path, 'w') as fp:
-                fp.write(pdb_generator(unrelaxed_structure))
+        except ValueError as e:
+            logger.warn(f"Cannot relax {target}")
+            print(e)
 
-            logger.info(f"Output written to {unrelaxed_output_path}...")
-            
-            if not args.skip_relaxation:
-                amber_relaxer = relax.AmberRelaxation(
-                    use_gpu=(model_device != "cpu"),
-                    **config.relax,
-                )
+    if args.save_outputs:
+        output_dict_path = os.path.join(
+            args.output_dir, f'{output_name}_output_dict.pkl'
+        )
+        with open(output_dict_path, "wb") as fp:
+            pickle.dump(out, fp, protocol=pickle.HIGHEST_PROTOCOL)
 
-                # Relax the prediction.
-                logger.info(f"Running relaxation on {unrelaxed_output_path}...")
-                t = time.perf_counter()
-                visible_devices = os.getenv("CUDA_VISIBLE_DEVICES", default="")
-                if "cuda" in model_device:
-                    device_no = model_device.split(":")[-1]
-                    os.environ["CUDA_VISIBLE_DEVICES"] = device_no
-                try:
-                    relaxed_pdb_str, _, _ = amber_relaxer.process(prot=unrelaxed_structure)
-                    os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
-                    relaxation_time = time.perf_counter() - t
+        logger.info(f"Model output written to {output_dict_path}...")
 
-                    logger.info(f"Relaxation time: {relaxation_time}")
-
-                    # Save the relaxed PDB.
-                    relaxed_output_path = os.path.join(
-                        output_directory, f'{output_name}_relaxed.pdb'
-                    )
-                    with open(relaxed_output_path, 'w') as fp:
-                        fp.write(relaxed_pdb_str)
-                    
-                    logger.info(f"Relaxed output written to {relaxed_output_path}...")
-                except ValueError as e:
-                    logger.warn(f"Cannot relax {target}")
-                    print(e)
-
-            if args.save_outputs:
-                output_dict_path = os.path.join(
-                    output_directory, f'{output_name}_output_dict.pkl'
-                )
-                with open(output_dict_path, "wb") as fp:
-                    pickle.dump(out, fp, protocol=pickle.HIGHEST_PROTOCOL)
-
-                logger.info(f"Model output written to {output_dict_path}...")
-
-    if args.native_dir is not None:
-        MetricTool.compute_all_metric(args.native_dir, args.output_dir, mode,
-                                      target_list, complex_type=ComplexType[args.complex_type])
-
-def update_timings(dict, output_file=os.path.join(os.getcwd(), "timings.json")):
-    """Write dictionary of one or more run step times to a file"""
-    import json
-    if os.path.exists(output_file):
-        with open(output_file, "r") as f:
-            try:
-                timings = json.load(f)
-            except json.JSONDecodeError:
-                logger.info(f"Overwriting non-standard JSON in {output_file}.")
-                timings = {}
-    else:
-        timings = {}
-    timings.update(dict)
-    with open(output_file, "w") as f:
-        json.dump(timings, f)
-    return output_file
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--fasta_dir", type=str,
-        help="Path to directory containing FASTA files, one sequence per file"
-    )
     parser.add_argument(
         "--features_dir", type=str,
         help="Directory containing processed feature files in pkl format. Named as `<target_name>/features.pkl`"
@@ -607,14 +309,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--target_list_file", type=str,
         help="Path to a txt file with each line is a name of target to infer."
-    )
-    parser.add_argument(
-        "--template_mmcif_dir", type=str,
-    )
-    parser.add_argument(
-        "--use_precomputed_alignments", type=str, default=None,
-        help="""Path to alignment directory. If provided, alignment computation 
-                is skipped and database path arguments are ignored."""
     )
     parser.add_argument(
         "--output_dir", type=str, default=os.getcwd(),
@@ -625,44 +319,22 @@ if __name__ == "__main__":
         help="""Whether run model on GPU"""
     )
     parser.add_argument(
-        "--config_presets", nargs="+", default=[],
+        "--config_preset", type=str,
         help="""Name of a model config preset defined in opencomplex/config.py"""
     )
     parser.add_argument(
-        "--param_paths", nargs="+", default=[],
-        help="Paths to opencomplex checkpoint. Should have the same order with config_presets."
+        "--param_path", type=str,
+        help="Path to opencomplex checkpoint."
     )
     parser.add_argument(
         "--save_outputs", action="store_true", default=False,
         help="Whether to save all model outputs, including embeddings, etc."
     )
     parser.add_argument(
-        "--cpus", type=int, default=4,
-        help="""Number of CPUs with which to run alignment tools"""
-    )
-    parser.add_argument(
-        "--preset", type=str, default='full_dbs',
-        choices=('reduced_dbs', 'full_dbs')
-    )
-    parser.add_argument(
-        "--output_postfix", type=str, default=None,
-        help="""Postfix for output prediction filenames"""
-    )
-    parser.add_argument(
-        "--data_random_seed", type=str, default=None
+        "--data_random_seed", type=int, default=None
     )
     parser.add_argument(
         "--skip_relaxation", action="store_true", default=False,
-    )
-    parser.add_argument(
-        "--multimer_ri_gap", type=int, default=200,
-        help="""Residue index offset between multiple sequences, if provided"""
-    )
-    parser.add_argument(
-        "--trace_model", action="store_true", default=False,
-        help="""Whether to convert parts of each model to TorchScript.
-                Significantly improves runtime at the cost of lengthy
-                'compilation.' Useful for large batch jobs."""
     )
     parser.add_argument(
         "--subtract_plddt", action="store_true", default=False,
@@ -671,7 +343,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--num_workers", type=int, default=1,
-        help="""Number of workers to run in parallel. If use_gpu is True, num_workers should be less than
+        help="""Number of workers to run in parallel. If use_gpu is True, num_workers should be less than or equal to
                 total number of available GPUs."""
     )
     parser.add_argument(
@@ -679,14 +351,9 @@ if __name__ == "__main__":
         help="Whether overwrite existing inference result."
     )
     parser.add_argument(
-        "--native_dir", type=str,
-        help="Directory to ground truth mmcif fils. If provided, metrics will be computed."
-    )
-    parser.add_argument(
         "--complex_type", type=str, default="protein", choices=["protein", "RNA", "mix"],
     )
     
-    add_data_args(parser)
     args = parser.parse_args()
 
     if(not args.use_gpu and torch.cuda.is_available()):
@@ -698,24 +365,18 @@ if __name__ == "__main__":
     if args.use_gpu and args.num_workers > torch.cuda.device_count():
         raise ValueError("Num workers should not be greater than device count if using gpu.")
 
-    if args.fasta_dir is not None:
-        logging.info("Inference from Fasta files")
-        infer_from_fasta = True
-    elif args.features_dir is not None:
-        logging.info("Inference from processed feature files")
-        infer_from_fasta = False
-    else:
-        logging.error("No input files provided!")
-
-    _worker = partial(main, args=args, infer_from_fasta=infer_from_fasta)
     mp.set_start_method("spawn")
-    if args.num_workers > 1:
-        with mp.Pool(args.num_workers) as p:
-            p.map(_worker, range(args.num_workers))
-        p.join()
-    else:
-        _worker(0)
 
+    target_list = get_target_list(args)
+    os.makedirs(args.output_dir, exist_ok=True)
 
-    if args.native_dir is not None:
-        MetricTool.summarize_metrics(args.output_dir)
+    device_q = None
+    if args.use_gpu:
+        device_q = mp.Queue()
+        for i in range(args.num_workers):
+            device_q.put(i)
+
+    worker = partial(main, args=args)
+    with mp.Pool(args.num_workers, initializer=init_worker, initargs=(args, device_q)) as p:
+        list(tqdm.tqdm(p.imap(worker, target_list), total=len(target_list)))
+    p.join()

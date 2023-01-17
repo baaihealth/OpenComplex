@@ -8,22 +8,18 @@ import time
 import json
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from opencomplex.config.config import model_config
-from opencomplex.data import templates, feature_pipeline, data_pipeline
+from opencomplex.data import templates, data_pipeline
 
 
 def generate_pkl_from_fas(args):        
-    config = model_config(args.config_preset)
     template_featurizer = templates.TemplateHitFeaturizer(
         mmcif_dir=args.template_mmcif_dir,
         max_template_date=args.max_template_date,
-        max_hits=config.data.predict.max_templates,
+        max_hits=args.max_templates,
         kalign_binary_path=args.kalign_binary_path,
         release_dates_path=args.release_dates_path,
         obsolete_pdbs_path=args.obsolete_pdbs_path
     )
-
-    use_small_bfd=(args.bfd_database_path is None)
 
     data_processor = data_pipeline.DataPipeline(
         template_featurizer=template_featurizer,
@@ -31,7 +27,6 @@ def generate_pkl_from_fas(args):
     random_seed = args.data_random_seed
     if random_seed is None:
         random_seed = random.randrange(sys.maxsize)
-    feature_processor = feature_pipeline.FeaturePipeline(config.data)
     
     alignment_runner = data_pipeline.AlignmentRunner(
         jackhmmer_binary_path=args.jackhmmer_binary_path,
@@ -83,11 +78,11 @@ def generate_pkl_from_fas(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "fasta_path", type=str,
+        "--fasta_path", type=str,
         help="Path to directory containing FASTA files, one sequence per file"
     )
     parser.add_argument(
-        "output_dir", type=str,
+        "--output_dir", type=str,
     )
     parser.add_argument(
         "--use_precomputed_alignments", type=str, default=None,
@@ -95,13 +90,8 @@ if __name__ == "__main__":
                 is skipped and database path arguments are ignored."""
     )
     parser.add_argument(
-        "--model_device", type=str, default="cpu",
-        help="""Name of the device on which to run the model. Any valid torch
-             device name is accepted (e.g. "cpu", "cuda:0")"""
-    )
-    parser.add_argument(
-        "--config_preset", type=str, default="fast",
-        help="""Name of a model config preset defined in openfold/config.py"""
+        "--max_templates", type=int, default=20,
+        help="""Max number of templates to use."""
     )
     parser.add_argument(
         "--cpus", type=int, default=12,
@@ -135,27 +125,27 @@ if __name__ == "__main__":
         help="""Path to bfd directory."""
     )
     parser.add_argument(
-        "--use_small_bfd", type=str, default=None,
-        help="""Path to small_bfd directory."""
+        "--use_small_bfd", default=False, action="store_true",
+        help="""If use small_bfd."""
     )
     parser.add_argument(
         "--obsolete_pdbs_path", type=str, default="/mnt/database/pdb_mmcif/obsolete.dat",
         help="""Path to obsolete_pdbs_path ."""
     )
     parser.add_argument(
-        "--jackhmmer_binary_path", type=str, default="/opt/anaconda3/envs/opencomplex/bin/jackhmmer",
+        "--jackhmmer_binary_path", type=str, default="/opt/conda/envs/opencomplex_venv/bin/jackhmmer",
         help="""Binary path of jackhmmer."""
     )
     parser.add_argument(
-        "--hhblits_binary_path", type=str, default="/opt/anaconda3/envs/opencomplex/bin/hhblits",
+        "--hhblits_binary_path", type=str, default="/opt/cnda/envs/opencomplex_venv/bin/hhblits",
         help="""Binary path of hhblits."""
     )
     parser.add_argument(
-        "--hhsearch_binary_path", type=str, default="/opt/anaconda3/envs/opencomplex/bin/hhsearch",
+        "--hhsearch_binary_path", type=str, default="/opt/conda/envs/opencomplex_venv/bin/hhsearch",
         help="""Binary path of hhsearch."""
     )
     parser.add_argument(
-        "--kalign_binary_path", type=str, default="/opt/anaconda3/envs/opencomplex/bin/kalign",
+        "--kalign_binary_path", type=str, default="/opt/conda/envs/opencomplex_venv/bin/kalign",
         help="""Binary path of kalign."""
     )
     parser.add_argument(

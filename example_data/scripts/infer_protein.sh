@@ -8,8 +8,8 @@ python3 run_pretrained_opencomplex.py \
     --output_dir output/infer_result                                `# output directory` \
     --use_gpu                                                       `# use gpu inference` \
     --num_workers 1                                                 `# number of parallel processes` \
-    --param_paths /path/to/ckpt                                     `# ckpt path` \
-    --config_presets "initial_training"                             `# config presets as in config.py` \
+    --param_path /path/to/ckpt                                      `# ckpt path` \
+    --config_preset "initial_training"                              `# config presets as in config.py` \
     --complex_type "protein"                                        `# protein, RNA, or mix (protein-RNA complex)` \
     --skip_relaxation                                               `# skip amber relaxation` \
     --overwrite                                                     `# overwrite existing result`

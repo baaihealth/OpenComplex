@@ -617,25 +617,6 @@ class DataPipeline:
 
         return msa_features
 
-    def _parse_rna_labels_data(self, labels_dir):
-        # TODO unify rna labels to features file
-        ret_labels = {}
-        # load labels in dict format
-        labels = torch.load(f"{labels_dir}/labels.pth")
-        # containing 'dis_n', 'dis_c4', 'dis_p', 'omg', 'theta'
-        # ret_labels["geometry_head"] = labels["geometry_head"].copy()
-        ret_labels["dis_n"] = labels["geometry_head"]['dis_n']
-        ret_labels["dis_c4"] = labels["geometry_head"]['dis_c4']
-        ret_labels["dis_p"] = labels["geometry_head"]['dis_p']
-        ret_labels["omg"] = labels["geometry_head"]['omg']
-        ret_labels["theta"] = labels["geometry_head"]['theta']
-        # containing 'eta_bb', 'theta_bb', 'chi'
-        # ret_labels["torsion_head"] = labels["torsion_head"].copy()
-        ret_labels["eta_bb"] = labels["torsion_head"]["eta_bb"]
-        ret_labels["theta_bb"] = labels["torsion_head"]["theta_bb"]
-        ret_labels["chi"] = labels["torsion_head"]["chi"]
-                
-        return ret_labels
 
     def process_fasta(
         self,
@@ -681,15 +662,12 @@ class DataPipeline:
         feature_dir: str,
     ):
         """Read features from generated pkl file"""
-        # TODO unify data format
         if os.path.exists(os.path.join(feature_dir, "features.pkl")):
             with open(os.path.join(feature_dir, "features.pkl"), "rb") as f:
                 features = pickle.load(f)
-        elif os.path.exists(os.path.join(feature_dir, "features.pth")):
-            features = torch.load(os.path.join(feature_dir, "features.pth"))
         else:
             raise ValueError(f"Feature file not found {feature_dir}")
-        
+
         features = rename_feats(features)
         
         if features["msa"].ndim > 2:
@@ -713,7 +691,6 @@ class DataPipeline:
         self,
         mmcif: mmcif_parsing.MmcifObject,  # parsing is expensive, so no path
         feature_dir: str,
-        rna_label_dir: Optional[str] = None,
         chain_id: Optional[str] = None,
         complex_type: ComplexType = ComplexType.PROTEIN
     ) -> FeatureDict:
@@ -723,12 +700,9 @@ class DataPipeline:
             If chain_id is None, it is assumed that there is only one chain
             in the object. Otherwise, a ValueError is thrown.
         """
-        # TODO unify data format
         if os.path.exists(os.path.join(feature_dir, "features.pkl")):
             with open(os.path.join(feature_dir, "features.pkl"), "rb") as f:
                 features = pickle.load(f)
-        elif os.path.exists(os.path.join(feature_dir, "features.pth")):
-            features = torch.load(os.path.join(feature_dir, "features.pth"))
         else:
             raise ValueError(f"Feature file not found {feature_dir}")
 
@@ -800,9 +774,6 @@ class DataPipeline:
         mmcif_feats['all_atom_positions'][binary_mask] -= translation_vec
         
         ret = {**mmcif_feats, **features}
-        if rna_label_dir is not None:
-            labels = self._parse_rna_labels_data(rna_label_dir)
-            ret.update(labels)
         return ret
 
     def process_mmcif(

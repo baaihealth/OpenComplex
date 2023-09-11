@@ -109,7 +109,7 @@ the permissive Apache Licence, Version 2.0.
 If you encounter problems using OpenComplex, feel free to create an issue! We also
 welcome pull requests from the community.
 
-Contact Information
+## Contact Information
 For help or issues using the repos, please submit a GitHub issue.
 
 For other communications, please contact Qiwei Ye (qwye@baai.ac.cn).
